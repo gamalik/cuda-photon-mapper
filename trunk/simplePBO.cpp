@@ -17,7 +17,8 @@ extern unsigned int window_height;
 unsigned int image_width = window_width;
 unsigned int image_height = window_height;
 
-extern "C" void launch_kernel(uchar4* , unsigned int, unsigned int, float);
+extern "C" void launch_kernel(uchar4* , unsigned int, unsigned int, float,
+							  int numPhotons [][5], float *photons[2][5][5000][3]);
 
 // variables
 GLuint pbo=NULL;
@@ -95,7 +96,8 @@ void cleanupCuda()
 }
 
 // Run the Cuda part of the computation
-void runCuda()
+void runCuda(int numPhotons [][5],
+				  float *photons[2][5][5000][3])
 {
   uchar4 *dptr=NULL;
 
@@ -105,11 +107,30 @@ void runCuda()
   cudaGLMapBufferObject((void**)&dptr, pbo);
 
   // execute the kernel
-  launch_kernel(dptr, image_width, image_height, animTime);
+  launch_kernel(dptr, image_width, image_height, animTime, numPhotons, photons);
 
   // unmap buffer object
   cudaGLUnmapBufferObject(pbo);
 }
+
+
+// Run the Cuda part of the computation
+void simpleRunCuda()
+{
+  uchar4 *dptr=NULL;
+
+  // map OpenGL buffer object for writing from CUDA on a single GPU
+  // no data is moved (Win & Linux). When mapped to CUDA, OpenGL
+  // should not use this buffer
+  cudaGLMapBufferObject((void**)&dptr, pbo);
+
+  // execute the kernel
+  // launch_kernel(dptr, image_width, image_height, animTime, numPhotons, photons);
+
+  // unmap buffer object
+  cudaGLUnmapBufferObject(pbo);
+}
+
 
 void initCuda(int argc, char** argv)
 {
@@ -129,5 +150,5 @@ void initCuda(int argc, char** argv)
   // Clean up on program exit
   atexit(cleanupCuda);
 
-  runCuda();
+  simpleRunCuda();
 }

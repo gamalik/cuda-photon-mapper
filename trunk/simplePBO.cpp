@@ -14,11 +14,19 @@ extern unsigned int window_width;
 extern unsigned int window_height;
 
 // constants (the following should be a const in a header file)
-unsigned int image_width = window_width;
-unsigned int image_height = window_height;
+unsigned int image_width = 512;
+unsigned int image_height = 512;
 
+/*
 extern "C" void launch_kernel(uchar4* , unsigned int, unsigned int, float,
 							  int numPhotons [][5], float *photons[2][5][5000][3]);
+
+extern "C" void launch_render_kernel(uchar4* , unsigned int, unsigned int, float, float3 []);
+*/
+
+extern "C" void launch_photon_mapping_kernel(uchar4* , unsigned int, unsigned int, float);
+extern "C" void launch_emit_photons_kernel(uchar4* , unsigned int, unsigned int, float);
+
 
 // variables
 GLuint pbo=NULL;
@@ -107,7 +115,42 @@ void runCuda(int numPhotons [][5],
   cudaGLMapBufferObject((void**)&dptr, pbo);
 
   // execute the kernel
-  launch_kernel(dptr, image_width, image_height, animTime, numPhotons, photons);
+  // launch_kernel(dptr, image_width, image_height, animTime, numPhotons, photons);
+
+  // unmap buffer object
+  cudaGLUnmapBufferObject(pbo);
+}
+
+
+void photonMappingCuda()
+{
+  uchar4 *dptr=NULL;
+
+  // map OpenGL buffer object for writing from CUDA on a single GPU
+  // no data is moved (Win & Linux). When mapped to CUDA, OpenGL
+  // should not use this buffer
+  cudaGLMapBufferObject((void**)&dptr, pbo);
+
+  // execute the kernel
+  // launch_emit_photons_kernel(dptr, image_width, image_height, animTime);
+  launch_photon_mapping_kernel(dptr, image_width, image_height, animTime);
+
+  // unmap buffer object
+  cudaGLUnmapBufferObject(pbo);
+}
+
+
+void renderCuda(float3 pixelData[])
+{
+  uchar4 *dptr=NULL;
+
+  // map OpenGL buffer object for writing from CUDA on a single GPU
+  // no data is moved (Win & Linux). When mapped to CUDA, OpenGL
+  // should not use this buffer
+  cudaGLMapBufferObject((void**)&dptr, pbo);
+
+  // execute the kernel
+  // launch_render_kernel(dptr, image_width, image_height, animTime, pixelData);
 
   // unmap buffer object
   cudaGLUnmapBufferObject(pbo);
@@ -126,6 +169,8 @@ void simpleRunCuda()
 
   // execute the kernel
   // launch_kernel(dptr, image_width, image_height, animTime, numPhotons, photons);
+  launch_emit_photons_kernel(dptr, image_width, image_height, animTime);
+
 
   // unmap buffer object
   cudaGLUnmapBufferObject(pbo);

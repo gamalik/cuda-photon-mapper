@@ -264,6 +264,58 @@ __global__ void kernel(uchar4* pos, unsigned int width, unsigned int height,
   }
 }
 
+
+
+__global__ void render_kernel(uchar4* pos, unsigned int width, unsigned int height, 
+							  float time, float3 * pixelData) {
+
+  int index = blockIdx.x * blockDim.x + threadIdx.x;
+  // unsigned int x = index%width;
+  // unsigned int y = index/width;
+
+  if(index < width*height) {
+	
+	float3 pixelColor = pixelData[index];
+
+	unsigned char r = (unsigned char)(pixelColor.x);
+    unsigned char g = (unsigned char)(pixelColor.y);
+    unsigned char b = (unsigned char)(pixelColor.z);
+    
+    // Each thread writes one pixel location in the texture (textel)
+    pos[index].w = 0;
+    pos[index].x = r;
+    pos[index].y = g;
+    pos[index].z = b;
+  }
+
+}
+
+
+
+extern "C" void launch_render_kernel(uchar4* pos, unsigned int image_width, 
+							  unsigned int image_height, float time, float3 pixelData[]) {
+
+
+    int nThreads=256;
+	int totalThreads = image_height * image_width;
+	int nBlocks = totalThreads/nThreads; 
+	nBlocks += ((totalThreads%nThreads)>0)?1:0;
+
+	float3 * d_pixelData;
+
+	cutilSafeCall(cudaMalloc((void**) &d_pixelData, image_width*image_height*sizeof(float3)));
+	cutilSafeCall(cudaMemcpy(d_pixelData, pixelData, image_width*image_height*sizeof(float3),cudaMemcpyHostToDevice));
+
+	render_kernel<<< nBlocks, nThreads>>>(pos, image_width, image_height, time, d_pixelData);
+
+	cudaThreadSynchronize();
+
+	checkCUDAError("kernel failed!");
+
+	cutilSafeCall(cudaFree(d_pixelData));
+}
+
+
 // Wrapper for the __global__ call that sets up the kernel call
 extern "C" void launch_kernel(uchar4* pos, unsigned int image_width, 
 			      unsigned int image_height, float time, int numPhotons [][5],
@@ -275,6 +327,7 @@ extern "C" void launch_kernel(uchar4* pos, unsigned int image_width,
   int nBlocks = totalThreads/nThreads; 
   nBlocks += ((totalThreads%nThreads)>0)?1:0;
 
+  /*
   int ** d_numPhotons;
 
   float3 **** d_photons;
@@ -294,6 +347,8 @@ extern "C" void launch_kernel(uchar4* pos, unsigned int image_width,
   }
 
   cutilSafeCall(cudaFree(d_numPhotons));
+
+  */
 
   // make certain the kernel has completed 
   cudaThreadSynchronize();

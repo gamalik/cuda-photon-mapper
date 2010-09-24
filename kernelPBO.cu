@@ -2,6 +2,7 @@
 
 #include <stdio.h>
 #include <cutil_math.h>
+#include <cutil_inline.h>
 
 void checkCUDAError(const char *msg) {
   cudaError_t err = cudaGetLastError();
@@ -139,10 +140,55 @@ __device__ float3 reflect(float3 ray, float3 fromPoint, int * gType, int * gInde
 }
 
 
+
+__device__ bool gatedSqDist3(float3 a, float3 b, float sqradius, float * gSqDist){ //Gated Squared Distance
+
+  float c = a.x - b.x;          //Efficient When Determining if Thousands of Points
+  float d = c*c;                  //Are Within a Radius of a Point (and Most Are Not!)
+
+  if (d > sqradius) return false; //Gate 1 - If this dimension alone is larger than
+
+  c = a.y - b.y;                //         the search radius, no need to continue
+  d += c*c;
+  if (d > sqradius) return false; //Gate 2
+
+  c = a.z - b.z;
+  d += c*c;
+  if (d > sqradius) return false; //Gate 3
+
+  *gSqDist = d;      return true ; //Store Squared Distance Itself in Global State
+
+}
+
+
+
+__device__ float3 gatherPhotons(float3 p, int type, int id, int ** numPhotons, float3 gOrigin,
+								float2 * planes, float4 * spheres, float3 **** photons, float sqRadius,
+								float * gSqDist, float exposure){
+
+  float3 energy = make_float3(0.0,0.0,0.0);  
+  float3 N = surfaceNormal(type, id, p, gOrigin, planes, spheres);                   //Surface Normal at Current Point
+
+  for (int i = 0; i < numPhotons[type][id]; i++){                    //Photons Which Hit Current Object
+
+    if (gatedSqDist3(p,photons[type][id][i][0],sqRadius, gSqDist)){           //Is Photon Close to Point?
+      float weight = max(0.0, -dot(N, photons[type][id][i][1] ));   //Single Photon Diffuse Lighting
+
+      weight *= (1.0 - sqrt(*gSqDist)) / exposure;                    //Weight by Photon-Point Distance
+      energy = (energy + (photons[type][id][i][2] * weight)); //Add Photon's Energy to Total
+
+   }} 
+  return energy;
+}
+
+
+
+
 __device__ float3 computePixelColor(unsigned int x, unsigned int y, float szImg, float3 gOrigin, int nrTypes, int * nrObjects,
 									float4 * spheres, float2 * planes, bool * gIntersect, int * gType, int * gIndex, float * gDist, 
-									float3 * gPoint) {
-	float3 rgb = make_float3(0.0f, 0.0f, 0.0f);
+									float3 * gPoint, int ** numPhotons, float3 **** photons, float sqRadius, 
+									float * gSqDist, float exposure) {
+	float3 rgb = make_float3(0.0f, 0.5f, 0.0f);
 	float3 ray = make_float3(  x/szImg - 0.5f ,-(y/szImg - 0.5f), 1.0f);	//Convert Pixels to Image Plane Coordinates
 																			//Focal Length = 1.0
 	raytrace(ray, gOrigin, nrTypes, nrObjects, spheres, planes, gIntersect, gType, gIndex, gDist);
@@ -162,7 +208,9 @@ __device__ float3 computePixelColor(unsigned int x, unsigned int y, float szImg,
 		} //3D Point of Intersection
 
 
-		// rgb = gatherPhotons(gPoint,gType,gIndex);
+		rgb = gatherPhotons(*gPoint,*gType,*gIndex, numPhotons, gOrigin,
+								planes, spheres, photons, sqRadius,
+								gSqDist, exposure);
 
 	}
 
@@ -171,7 +219,7 @@ __device__ float3 computePixelColor(unsigned int x, unsigned int y, float szImg,
 
 //Simple kernel writes changing colors to a uchar4 array
 __global__ void kernel(uchar4* pos, unsigned int width, unsigned int height, 
-		       float time)
+		       float time, int ** numPhotons, float3 **** photons)
 {
   int index = blockIdx.x * blockDim.x + threadIdx.x;
   unsigned int x = index%width;
@@ -194,7 +242,15 @@ __global__ void kernel(uchar4* pos, unsigned int width, unsigned int height,
 	float gSqDist, gDist = -1.0;      //... Distance from Ray Origin to Intersection
 	float3 gPoint = make_float3(0.0, 0.0, 0.0); //... Point At Which the Ray Intersected the Object
 
-    float3 pixelColor = computePixelColor(x,y,width, gOrigin, nrTypes, nrObjects, spheres, planes, &gIntersect, &gType, &gIndex, &gDist, &gPoint);
+
+	float sqRadius = 0.7;             //Photon Integration Area (Squared for Efficiency)
+	float exposure = 50.0;            //Number of Photons Integrated at Brightest Pixel
+	
+	
+
+
+    float3 pixelColor = computePixelColor(x,y,width, gOrigin, nrTypes, nrObjects, spheres, planes, &gIntersect, &gType, &gIndex, &gDist, &gPoint, numPhotons, 
+										photons, sqRadius,&gSqDist, exposure);
 
 	unsigned char r = (unsigned char)(pixelColor.x * 255.0f);
     unsigned char g = (unsigned char)(pixelColor.y * 255.0f);
@@ -210,7 +266,8 @@ __global__ void kernel(uchar4* pos, unsigned int width, unsigned int height,
 
 // Wrapper for the __global__ call that sets up the kernel call
 extern "C" void launch_kernel(uchar4* pos, unsigned int image_width, 
-			      unsigned int image_height, float time)
+			      unsigned int image_height, float time, int numPhotons [][5],
+				  float *photons[2][5][5000][3])
 {
   // execute the kernel
   int nThreads=256;
@@ -218,8 +275,26 @@ extern "C" void launch_kernel(uchar4* pos, unsigned int image_width,
   int nBlocks = totalThreads/nThreads; 
   nBlocks += ((totalThreads%nThreads)>0)?1:0;
 
-  kernel<<< nBlocks, nThreads>>>(pos, image_width, image_height, time);
+  int ** d_numPhotons;
+
+  float3 **** d_photons;
+
+  cutilSafeCall(cudaMalloc((void**) &d_numPhotons, 2*sizeof(int*)));
+
+  for(int i = 0; i < 2; i++) {
+	  cutilSafeCall(cudaMalloc((void**) &d_numPhotons[i], 5*sizeof(int)));
+	  cutilSafeCall(cudaMemcpy(d_numPhotons[i], numPhotons[i], 5*sizeof(int), cudaMemcpyHostToDevice));
+  }
   
+  kernel<<< nBlocks, nThreads>>>(pos, image_width, image_height, time, d_numPhotons, d_photons);
+  
+  
+  for(int i = 0; i < 2; i++) {
+	  cutilSafeCall(cudaFree(d_numPhotons[i]));
+  }
+
+  cutilSafeCall(cudaFree(d_numPhotons));
+
   // make certain the kernel has completed 
   cudaThreadSynchronize();
 

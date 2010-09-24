@@ -20,7 +20,8 @@ extern unsigned int image_width;
 extern unsigned int image_height;
 
 // The user must create the following routines:
-void runCuda();
+void runCuda(int numPhotons [][5],
+				  float *photons[2][5][5000][3]);
 
 
 
@@ -384,7 +385,7 @@ void display()
   emitPhotons();
 	
   // run CUDA kernel
-  runCuda();
+  runCuda(numPhotons, photons);
   
   // Create a texture from the buffer
   glBindBuffer( GL_PIXEL_UNPACK_BUFFER, pbo);

@@ -216,6 +216,34 @@ __device__ float3 getColor(float3 rgbIn, int type, int index){ //Specifies Mater
 
 
 
+__device__ float3 refract3(float3 ray, float3 fromPoint,
+							int & gType, int & gIndex, float3 & gPoint){                //Refract Ray
+	
+	float3 refractedRay = make_float3(0.0,0.0,0.0);
+
+	if(gType == 0 && gIndex == 2) {  // only second sphere refracts rays
+		
+		float3 normal = surfaceNormal(gType, gIndex, gPoint, fromPoint);  //Surface Normal
+		
+		float n1 = 1.0;  // refraction index of first material (air)
+		float n2 = 0.5;  // refraction index of second material
+
+		float n = n1 / n2;
+		float cosI = dot(normal, ray);
+		float sinT2 = n * n * (1.0 - cosI * cosI);
+
+		if (sinT2 > 1.0)
+		{
+			return make_float3(0.0,0.0,0.0);
+		}
+		return n * ray - (n + sqrt(1.0 - sinT2)) * normal;
+
+	}
+
+	return refractedRay;
+
+}
+
 __device__ float3 reflect3(float3 ray, float3 fromPoint, 
 						   int & gType, int & gIndex, float3 & gPoint){                //Reflect Ray
   float3 N = surfaceNormal(gType, gIndex, gPoint, fromPoint);  //Surface Normal
@@ -368,14 +396,25 @@ __device__ void emitPhotons(int index, float & gSqDist, float3 & gPoint,
 
     raytrace(ray, prevPoint, gDist,gType,gIndex,gIntersect);                          //Trace the Photon's Path
     
+	/*
+	float3 rray = make_float3(0.0f,0.0f,0.0f);  // refracted ray
+	int rType = gType;
+	int rIndex = gIndex;
+	float3 rPoint = make_float3(gPoint.x, gPoint.y, gPoint.z);
+	bool rIntersect = gIntersect;
 	// bounces = 1;
+	*/
+	
+
 	while (gIntersect && bounces <= nrBounces){        //Intersection With New Object
         gPoint = ( (ray * gDist) + prevPoint);   //3D Point of Intersection
         rgb =  (getColor(rgb,gType,gIndex) * 1.0/sqrt((float)bounces));
         storePhoton(gType, gIndex, gPoint, ray, rgb, index);  //Store Photon Info 
         // drawPhoton(rgb, gPoint);                       //Draw Photon
         shadowPhoton(ray, gDist,gType,gIndex,gIntersect, gPoint, index);                             //Shadow Photon
-        ray = reflect3(ray,prevPoint, gType,gIndex, gPoint);                  //Bounce the Photon
+        
+		ray = reflect3(ray,prevPoint, gType,gIndex, gPoint);                  //Bounce the Photon
+		
         raytrace(ray, gPoint, gDist,gType,gIndex,gIntersect);                         //Trace It to Next Location
         prevPoint = gPoint;
         bounces++;

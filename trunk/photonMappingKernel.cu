@@ -188,7 +188,7 @@ __device__ float3 gatherPhotons(float3 p, int type, int id,
 								float & gSqDist){
   float3 energy = make_float3(0.0,0.0,0.0);  
   float3 N = surfaceNormal(type, id, p, gOrigin);                   //Surface Normal at Current Point
-  for (int i = 0; i < numPhotons[type][id]; i++){                    //Photons Which Hit Current Object
+  for (int i = 0; i < 1000; i++){                    //Photons Which Hit Current Object
     if (gatedSqDist3(p,photons[type][id][i][0],sqRadius,gSqDist)){           //Is Photon Close to Point?
       float weight = max(0.0, -dot(N, photons[type][id][i][1] ));   //Single Photon Diffuse Lighting
       weight *= (1.0 - sqrt(gSqDist)) / exposure;                    //Weight by Photon-Point Distance
@@ -300,25 +300,27 @@ __device__ float3 rand3(float max) {
 
 
 
-__device__ void storePhoton(int type, int id, float3 location, float3 direction, float3 energy){
-  photons[type][id][numPhotons[type][id]][0] = location;  //Location
-  photons[type][id][numPhotons[type][id]][1] = direction; //Direction
-  photons[type][id][numPhotons[type][id]][2] = energy;    //Attenuated Energy (Color)
-  numPhotons[type][id]++;
+__device__ void storePhoton(int type, int id, float3 location, float3 direction, float3 energy, int index){
+  photons[type][id][index][0] = location;  //Location
+  photons[type][id][index][1] = direction; //Direction
+  photons[type][id][index][2] = energy;    //Attenuated Energy (Color)
+  
+  if(index + 1 > numPhotons[type][id])  
+	numPhotons[type][id] = index + 1;	// max possible photon count is max thread index
 }
 
 
 
 __device__ void shadowPhoton(float3 ray,
 							 float & gDist, int & gType, int & gIndex, bool & gIntersect,
-							 float3 & gPoint){                               //Shadow Photons
+							 float3 & gPoint, int index){                               //Shadow Photons
   float3 shadow = make_float3(-0.25,-0.25,-0.25);
   float3 tPoint = gPoint; 
   int tType = gType, tIndex = gIndex;                         //Save State
   float3 bumpedPoint = (gPoint + (ray * 0.00001));      //Start Just Beyond Last Intersection
   raytrace(ray, bumpedPoint, gDist,gType,gIndex,gIntersect);                                 //Trace to Next Intersection (In Shadow)
   float3 shadowPoint = ( (ray * gDist) + bumpedPoint); //3D Point
-  storePhoton(gType, gIndex, shadowPoint, ray, shadow);
+  storePhoton(gType, gIndex, shadowPoint, ray, shadow, index);
   gPoint = tPoint; gType = tType; gIndex = tIndex;            //Restore State
 }
 
@@ -328,20 +330,25 @@ __global__ void init_photons_kernel() {
 		 numPhotons[t][i] = 0; 
 }
 
-__device__ void emitPhotons(float & gSqDist, float3 & gPoint,
+__device__ void emitPhotons(int index, float & gSqDist, float3 & gPoint,
 							float & gDist, int & gType, int & gIndex, bool & gIntersect){
    
+  
+	
+  
   // randomSeed(0);                               //TODO: Ensure Same Photons Each Time
+  /*
   for (int t = 0; t < nrTypes; t++)            //Initialize Photon Count to Zero for Each Object
     for (int i = 0; i < nrObjects[t]; i++)
       numPhotons[t][i] = 0; 
-	
+  */
   
-  for (int i = 0; i < nrPhotons; i++){ //Draw 3x Photons For Usability
+  if(index < 1000) {
+  // for (int i = 0; i < 1000; i++){ //Draw 3x Photons For Usability
     int bounces = 1;
     float3 rgb = make_float3(1.0,1.0,1.0);               //Initial Photon Color is White
     // float3 ray = normalize( rand3(1.0) );    //Randomize Direction of Photon Emission
-	float3 ray = normalize( randomNumbers[i] );    //Randomize Direction of Photon Emission
+	float3 ray = normalize( randomNumbers[index] );    //Randomize Direction of Photon Emission
     float3 prevPoint = Light;                 //Emit From Point Light Source
     
 	
@@ -350,7 +357,7 @@ __device__ void emitPhotons(float & gSqDist, float3 & gPoint,
 	while (prevPoint.y >= Light.y && k < 1000){ 
 	// for(int k = 0; k < 100; k++){
 		// prevPoint = (Light + (normalize(rand3(1.0)) * 0.75));
-		prevPoint = (Light + (normalize(randomNumbers[i+k]) * 0.75));
+		prevPoint = (Light + (normalize(randomNumbers[index+k]) * 0.75));
 		k++;
 	}
 	
@@ -365,9 +372,9 @@ __device__ void emitPhotons(float & gSqDist, float3 & gPoint,
 	while (gIntersect && bounces <= nrBounces){        //Intersection With New Object
         gPoint = ( (ray * gDist) + prevPoint);   //3D Point of Intersection
         rgb =  (getColor(rgb,gType,gIndex) * 1.0/sqrt((float)bounces));
-        storePhoton(gType, gIndex, gPoint, ray, rgb);  //Store Photon Info 
+        storePhoton(gType, gIndex, gPoint, ray, rgb, index);  //Store Photon Info 
         // drawPhoton(rgb, gPoint);                       //Draw Photon
-        shadowPhoton(ray, gDist,gType,gIndex,gIntersect, gPoint);                             //Shadow Photon
+        shadowPhoton(ray, gDist,gType,gIndex,gIntersect, gPoint, index);                             //Shadow Photon
         ray = reflect3(ray,prevPoint, gType,gIndex, gPoint);                  //Bounce the Photon
         raytrace(ray, gPoint, gDist,gType,gIndex,gIntersect);                         //Trace It to Next Location
         prevPoint = gPoint;
@@ -444,6 +451,7 @@ __global__ void photon_mapping_kernel(uchar4* pos, unsigned int width, unsigned 
 __global__ void emit_photons_kernel(float animTime){
 	gAnimTime = animTime;
 
+	int index = blockIdx.x * blockDim.x + threadIdx.x;
 
 	// ----- Raytracing Globals -----
 	bool gIntersect = false;       //For Latest Raytracing Call... Was Anything Intersected by the Ray?
@@ -453,7 +461,7 @@ __global__ void emit_photons_kernel(float animTime){
 	float3 gPoint; // = {0.0, 0.0, 0.0}; //... Point At Which the Ray Intersected the Object
 
 	
-	emitPhotons(gSqDist, gPoint, gDist, gType, gIndex,gIntersect);
+	emitPhotons(index, gSqDist, gPoint, gDist, gType, gIndex,gIntersect);
 	
 }
 
@@ -477,13 +485,17 @@ __global__ void init_random_numbers_kernel() {
 extern "C" void launch_emit_photons_kernel(uchar4* pos, unsigned int image_width, 
 							  unsigned int image_height, float animTime) {
 
-	/*
+	
 	init_photons_kernel<<< 1,1>>>();
 
 	cudaThreadSynchronize();
-	*/
+
+	int nThreads=100;
+	int totalThreads = 1000;
+	int nBlocks = totalThreads/nThreads; 
+	nBlocks += ((totalThreads%nThreads)>0)?1:0;
  
-	emit_photons_kernel<<< 1, 1>>>(animTime);
+	emit_photons_kernel<<< nBlocks, nThreads>>>(animTime);
 
 	cudaThreadSynchronize();
 

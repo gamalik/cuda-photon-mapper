@@ -26,7 +26,7 @@ extern "C" void launch_render_kernel(uchar4* , unsigned int, unsigned int, float
 
 extern "C" void launch_photon_mapping_kernel(uchar4* , unsigned int, unsigned int, float);
 extern "C" void launch_emit_photons_kernel(uchar4* , unsigned int, unsigned int, float);
-
+extern "C" void launch_init_random_numbers_kernel();
 
 // variables
 GLuint pbo=NULL;
@@ -119,6 +119,11 @@ void runCuda(int numPhotons [][5],
 
   // unmap buffer object
   cudaGLUnmapBufferObject(pbo);
+}
+
+
+void initRandomNumbers() {
+	launch_init_random_numbers_kernel();
 }
 
 

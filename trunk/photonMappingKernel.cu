@@ -26,7 +26,7 @@ void checkCUDAError(const char *msg) {
 	__device__ int numPhotons[2][5]; // = {{0,0},{0,0,0,0,0}};              //Photon Count for Each Scene Object
 	__device__ float3 photons[2][5][5000][3]; // = new float[2][5][5000][3][3]; //Allocated Memory for Per-Object Photon Info
 
-
+	__device__ float3 randomNumbers[10000]; // sequence of random numbers to re-use
 
 	// ----- Photon Mapping -----
 	__device__ int nrPhotons = 1000;             //Number of Photons Emitted
@@ -322,20 +322,26 @@ __device__ void shadowPhoton(float3 ray,
   gPoint = tPoint; gType = tType; gIndex = tIndex;            //Restore State
 }
 
-
+__global__ void init_photons_kernel() {
+	for (int t = 0; t < nrTypes; t++)            //Initialize Photon Count to Zero for Each Object
+		for (int i = 0; i < nrObjects[t]; i++)
+		 numPhotons[t][i] = 0; 
+}
 
 __device__ void emitPhotons(float & gSqDist, float3 & gPoint,
 							float & gDist, int & gType, int & gIndex, bool & gIntersect){
-  // randomSeed(0);                               //Ensure Same Photons Each Time
+   
+  // randomSeed(0);                               //TODO: Ensure Same Photons Each Time
   for (int t = 0; t < nrTypes; t++)            //Initialize Photon Count to Zero for Each Object
     for (int i = 0; i < nrObjects[t]; i++)
       numPhotons[t][i] = 0; 
-
+	
   
   for (int i = 0; i < nrPhotons; i++){ //Draw 3x Photons For Usability
     int bounces = 1;
     float3 rgb = make_float3(1.0,1.0,1.0);               //Initial Photon Color is White
-    float3 ray = normalize( rand3(1.0) );    //Randomize Direction of Photon Emission
+    // float3 ray = normalize( rand3(1.0) );    //Randomize Direction of Photon Emission
+	float3 ray = normalize( randomNumbers[i] );    //Randomize Direction of Photon Emission
     float3 prevPoint = Light;                 //Emit From Point Light Source
     
 	
@@ -343,7 +349,8 @@ __device__ void emitPhotons(float & gSqDist, float3 & gPoint,
     int k = 0;
 	while (prevPoint.y >= Light.y && k < 1000){ 
 	// for(int k = 0; k < 100; k++){
-		prevPoint = (Light + (normalize(rand3(1.0)) * 0.75));
+		// prevPoint = (Light + (normalize(rand3(1.0)) * 0.75));
+		prevPoint = (Light + (normalize(randomNumbers[i+k]) * 0.75));
 		k++;
 	}
 	
@@ -355,7 +362,7 @@ __device__ void emitPhotons(float & gSqDist, float3 & gPoint,
     raytrace(ray, prevPoint, gDist,gType,gIndex,gIntersect);                          //Trace the Photon's Path
     
 	// bounces = 1;
-	while (gIntersect && bounces <= 3) { // && bounces <= nrBounces){        //Intersection With New Object
+	while (gIntersect && bounces <= nrBounces){        //Intersection With New Object
         gPoint = ( (ray * gDist) + prevPoint);   //3D Point of Intersection
         rgb =  (getColor(rgb,gType,gIndex) * 1.0/sqrt((float)bounces));
         storePhoton(gType, gIndex, gPoint, ray, rgb);  //Store Photon Info 
@@ -446,9 +453,23 @@ __global__ void emit_photons_kernel(float animTime){
 	float3 gPoint; // = {0.0, 0.0, 0.0}; //... Point At Which the Ray Intersected the Object
 
 	
-	emitPhotons(gSqDist, gPoint,
-							gDist, gType, gIndex,gIntersect);
+	emitPhotons(gSqDist, gPoint, gDist, gType, gIndex,gIntersect);
 	
+}
+
+
+__global__ void init_random_numbers_kernel() {
+	/*
+	int index = blockIdx.x * blockDim.x + threadIdx.x;
+
+	if(index < nrPhotons) {
+		randomNumbers[index] = rand3(1.0);
+	}
+	*/
+
+	for(int i = 0; i < 2000; i++) {
+		randomNumbers[i] = rand3(1.0);
+	}
 }
 
 
@@ -456,7 +477,11 @@ __global__ void emit_photons_kernel(float animTime){
 extern "C" void launch_emit_photons_kernel(uchar4* pos, unsigned int image_width, 
 							  unsigned int image_height, float animTime) {
 
+	/*
+	init_photons_kernel<<< 1,1>>>();
 
+	cudaThreadSynchronize();
+	*/
  
 	emit_photons_kernel<<< 1, 1>>>(animTime);
 
@@ -481,6 +506,21 @@ extern "C" void launch_photon_mapping_kernel(uchar4* pos, unsigned int image_wid
 
 	cudaThreadSynchronize();
 
+	checkCUDAError("kernel failed!");
+}
+
+
+extern "C" void launch_init_random_numbers_kernel() {
+
+	/*
+	int nThreads=100;
+	int totalThreads = 10000;
+	int nBlocks = totalThreads/nThreads; 
+	nBlocks += ((totalThreads%nThreads)>0)?1:0;
+	*/
+
+	init_random_numbers_kernel<<< 1, 1 >>>();
+	cudaThreadSynchronize();
 	checkCUDAError("kernel failed!");
 }
 

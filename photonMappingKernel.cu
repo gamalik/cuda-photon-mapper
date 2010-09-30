@@ -221,28 +221,66 @@ __device__ float3 refract3(float3 ray, float3 fromPoint,
 	
 	float3 refractedRay = make_float3(0.0,0.0,0.0);
 
-	if(gType == 0 && gIndex == 2) {  // only second sphere refracts rays
+	// if(gType == 0) {  // only first sphere refracts rays
 		
 		float3 normal = surfaceNormal(gType, gIndex, gPoint, fromPoint);  //Surface Normal
 		
 		float n1 = 1.0;  // refraction index of first material (air)
-		float n2 = 0.5;  // refraction index of second material
+		float n2 = 1.3;  // refraction index of second material
 
 		float n = n1 / n2;
-		float cosI = dot(normal, ray);
-		float sinT2 = n * n * (1.0 - cosI * cosI);
+		float cosI = - dot(normal, ray);
+		float cosT2 = 1 - n * n * (1.0 - cosI * cosI);
 
-		if (sinT2 > 1.0)
+		if (cosT2 > 0.0)
 		{
-			return make_float3(0.0,0.0,0.0);
+			return n * ray + (n * cosI - sqrt(cosT2)) * normal;
+			
 		}
-		return n * ray - (n + sqrt(1.0 - sinT2)) * normal;
+		
+		return make_float3(0.0,0.0,0.0);
 
-	}
+	//}
 
-	return refractedRay;
+	//return refractedRay;
 
 }
+
+
+
+
+__device__ float3 innerRefract3(float3 ray, float3 fromPoint,
+							int & gType, int & gIndex, float3 & gPoint){                //Refract Ray
+	
+	float3 refractedRay = make_float3(0.0,0.0,0.0);
+
+	// if(gType == 0) {  // only first sphere refracts rays
+		
+		float3 normal = - surfaceNormal(gType, gIndex, gPoint, fromPoint);  //Surface Normal
+		
+		float n1 = 1.0;  // refraction index of first material (air)
+		float n2 = 1.3;  // refraction index of second material
+
+		float n = n1 / n2;
+		float cosI = - dot(normal, ray);
+		float cosT2 = 1 - n * n * (1.0 - cosI * cosI);
+
+		if (cosT2 > 0.0)
+		{
+			return n * ray + (n * cosI - sqrt(cosT2)) * normal;
+			
+		}
+		
+		return make_float3(0.0,0.0,0.0);
+
+	//}
+
+	//return refractedRay;
+
+}
+
+
+
 
 __device__ float3 reflect3(float3 ray, float3 fromPoint, 
 						   int & gType, int & gIndex, float3 & gPoint){                //Reflect Ray
@@ -272,7 +310,21 @@ __device__ float3 computePixelColor(float x, float y,
       if (gIntersect){ 
 		  gPoint = ( (ray * gDist) + gPoint); 
 	  }
-	} //3D Point of Intersection
+	} else if(gType == 0 && gIndex == 0) {
+		ray = refract3(ray,gOrigin, gType,gIndex, gPoint);        //Reflect Ray Off the Surface
+		gPoint = ( (ray * 0.00001) + gPoint);
+		raytrace(ray, gPoint, gDist,gType,gIndex,gIntersect);             //Follow the Reflected Ray
+		
+		  if (gIntersect){ 
+			  // gPoint = ( (ray * gDist) + gPoint); 
+			  // ray = innerRefract3(ray,gOrigin, gType,gIndex, gPoint);        //Reflect Ray Off the Surface
+			  gPoint = ( (ray * 0.00001) + gPoint);
+			  raytrace(ray, gPoint, gDist,gType,gIndex,gIntersect);             //Follow the Reflected Ray
+			  gPoint = ( (ray * gDist) + gPoint);
+		  }
+	}
+	
+	//3D Point of Intersection
         
     if (lightPhotons){                   //Lighting via Photon Mapping
       rgb = gatherPhotons(gPoint,gType,gIndex, gSqDist);
@@ -397,13 +449,27 @@ __device__ void emitPhotons(int index, float & gSqDist, float3 & gPoint,
     raytrace(ray, prevPoint, gDist,gType,gIndex,gIntersect);                          //Trace the Photon's Path
     
 	/*
-	float3 rray = make_float3(0.0f,0.0f,0.0f);  // refracted ray
-	int rType = gType;
-	int rIndex = gIndex;
-	float3 rPoint = make_float3(gPoint.x, gPoint.y, gPoint.z);
-	bool rIntersect = gIntersect;
-	// bounces = 1;
+	if(gIntersect && gType == 0) {
+		// hit a sphere
+		float3 rray = make_float3(0.0f,0.0f,0.0f);  // refracted ray
+		int rType = gType;
+		int rIndex = gIndex;
+		float3 rPoint = make_float3(gPoint.x, gPoint.y, gPoint.z);
+		bool rIntersect = gIntersect;
+		float rDist = gDist;
+
+		rray = refract3(ray, prevPoint, rType, rIndex, rPoint);
+		raytrace(rray, rPoint, rDist,rType,rIndex,rIntersect);
+		rray = refract3(ray, prevPoint, rType, rIndex, rPoint);
+		raytrace(rray, rPoint, rDist,rType,rIndex,rIntersect);
+
+		if(rIntersect) {
+			float3 rrgb =  (getColor(rgb,gType,gIndex) * 1.0/sqrt((float)bounces));
+			storePhoton(rType, rIndex, rPoint, rray, rrgb, index);
+		}
+	}
 	*/
+	
 	
 
 	while (gIntersect && bounces <= nrBounces){        //Intersection With New Object
@@ -417,7 +483,32 @@ __device__ void emitPhotons(int index, float & gSqDist, float3 & gPoint,
 		
         raytrace(ray, gPoint, gDist,gType,gIndex,gIntersect);                         //Trace It to Next Location
         prevPoint = gPoint;
-        bounces++;
+        
+		/*
+		if(gIntersect && gType == 0) {
+			// hit a sphere
+			float3 rray = make_float3(0.0f,0.0f,0.0f);  // refracted ray
+			int rType = gType;
+			int rIndex = gIndex;
+			float3 rPoint = make_float3(gPoint.x, gPoint.y, gPoint.z);
+			bool rIntersect = gIntersect;
+			float rDist = gDist;
+
+			rray = refract3(ray, prevPoint, rType, rIndex, rPoint);
+			raytrace(rray, rPoint, rDist,rType,rIndex,rIntersect);
+			rray = refract3(ray, prevPoint, rType, rIndex, rPoint);
+			raytrace(rray, rPoint, rDist,rType,rIndex,rIntersect);
+
+			if(rIntersect) {
+				float3 rrgb =  (getColor(rgb,gType,gIndex) * 1.0/sqrt((float)bounces));
+				storePhoton(rType, rIndex, rPoint, rray, rrgb, index);
+			}
+		}
+		*/
+	
+		
+		
+		bounces++;
 	}
 	
   }

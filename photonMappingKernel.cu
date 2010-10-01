@@ -229,12 +229,17 @@ __device__ float3 refract3(float3 ray, float3 fromPoint,
 		float n2 = 1.3;  // refraction index of second material
 
 		float n = n1 / n2;
+		
+		if(factor == -1.0) {
+			n = 1.0;
+		}
+
 		float cosI = - dot(normal, ray);
-		float cosT2 = 1 - n * n * (1.0 - cosI * cosI);
+		float cosT2 = 1.0 - (n * n * (1.0 - cosI * cosI));
 
 		if (cosT2 > 0.0)
 		{
-			return n * ray + (n * cosI - sqrt(cosT2)) * normal;
+			return (n * ray) + (n * cosI - sqrt(cosT2)) * normal;
 			
 		}
 		
@@ -418,31 +423,37 @@ __device__ void emitPhotons(int index, float & gSqDist, float3 & gPoint,
 		bounces = nrBounces+1;
 	
 
-    raytrace(ray, prevPoint, gDist,gType,gIndex,gIntersect);                          //Trace the Photon's Path
+    raytrace(ray, Light, gDist,gType,gIndex,gIntersect);                          //Trace the Photon's Path
     
-	/*
-	if(gIntersect && gType == 0) {
+	
+	if(gIntersect && gType == 0 && gIndex == 0) {
 		// hit a sphere
 		float3 rray = make_float3(0.0f,0.0f,0.0f);  // refracted ray
 		int rType = gType;
 		int rIndex = gIndex;
-		float3 rPoint = make_float3(gPoint.x, gPoint.y, gPoint.z);
+		float3 rPoint = ( (ray * gDist) + Light);
 		bool rIntersect = gIntersect;
 		float rDist = gDist;
 
-		rray = refract3(ray, prevPoint, rType, rIndex, rPoint);
+		rray = refract3(ray, rPoint, rType, rIndex, rPoint, 1.0);
 		raytrace(rray, rPoint, rDist,rType,rIndex,rIntersect);
-		rray = refract3(ray, prevPoint, rType, rIndex, rPoint);
+
+		rPoint = ( (rray * rDist) + rPoint);
+
+		rray = refract3(rray, rPoint, rType, rIndex, rPoint, -1.0);
 		raytrace(rray, rPoint, rDist,rType,rIndex,rIntersect);
 
 		if(rIntersect) {
-			float3 rrgb =  (getColor(rgb,gType,gIndex) * 1.0/sqrt((float)bounces));
+			rPoint = ( (rray * rDist) + rPoint);
+
+			float3 rrgb =  2.79*(getColor(rgb,rType,rIndex) * 1.0/sqrt((float)bounces));
+			//float3 rrgb =  make_float3(255.0,0.0,0.0);
 			storePhoton(rType, rIndex, rPoint, rray, rrgb, index);
 		}
 	}
-	*/
 	
 	
+	raytrace(ray, prevPoint, gDist,gType,gIndex,gIntersect);                          //Trace the Photon's Path
 
 	while (gIntersect && bounces <= nrBounces){        //Intersection With New Object
         gPoint = ( (ray * gDist) + prevPoint);   //3D Point of Intersection
@@ -511,7 +522,8 @@ __global__ void photon_mapping_kernel(uchar4* pos, unsigned int width, unsigned 
   Light = make_float3(0.0,1.2,3.75);
 
   spheres[0] = make_float4(1.0,0.0,4.0,0.5);
-  spheres[1] = make_float4(-0.6,-1.0,4.5*cos(gAnimTime),0.5);
+  // spheres[1] = make_float4(-0.6,-1.0,4.5*cos(gAnimTime),0.5);
+  spheres[1] = make_float4(-0.6,-1.0,4.5,0.5);
 
   planes[0] = make_float2(0, 1.5);
   planes[1] = make_float2(1, -1.5);

@@ -217,13 +217,13 @@ __device__ float3 getColor(float3 rgbIn, int type, int index){ //Specifies Mater
 
 
 __device__ float3 refract3(float3 ray, float3 fromPoint,
-							int & gType, int & gIndex, float3 & gPoint){                //Refract Ray
+							int & gType, int & gIndex, float3 & gPoint, float factor){                //Refract Ray
 	
 	float3 refractedRay = make_float3(0.0,0.0,0.0);
 
 	// if(gType == 0) {  // only first sphere refracts rays
 		
-		float3 normal = surfaceNormal(gType, gIndex, gPoint, fromPoint);  //Surface Normal
+		float3 normal = factor * surfaceNormal(gType, gIndex, gPoint, fromPoint);  //Surface Normal
 		
 		float n1 = 1.0;  // refraction index of first material (air)
 		float n2 = 1.3;  // refraction index of second material
@@ -249,42 +249,14 @@ __device__ float3 refract3(float3 ray, float3 fromPoint,
 
 
 
-__device__ float3 innerRefract3(float3 ray, float3 fromPoint,
-							int & gType, int & gIndex, float3 & gPoint){                //Refract Ray
-	
-	float3 refractedRay = make_float3(0.0,0.0,0.0);
 
-	// if(gType == 0) {  // only first sphere refracts rays
-		
-		float3 normal = - surfaceNormal(gType, gIndex, gPoint, fromPoint);  //Surface Normal
-		
-		float n1 = 1.0;  // refraction index of first material (air)
-		float n2 = 1.3;  // refraction index of second material
-
-		float n = n1 / n2;
-		float cosI = - dot(normal, ray);
-		float cosT2 = 1 - n * n * (1.0 - cosI * cosI);
-
-		if (cosT2 > 0.0)
-		{
-			return n * ray + (n * cosI - sqrt(cosT2)) * normal;
-			
-		}
-		
-		return make_float3(0.0,0.0,0.0);
-
-	//}
-
-	//return refractedRay;
-
-}
 
 
 
 
 __device__ float3 reflect3(float3 ray, float3 fromPoint, 
-						   int & gType, int & gIndex, float3 & gPoint){                //Reflect Ray
-  float3 N = surfaceNormal(gType, gIndex, gPoint, fromPoint);  //Surface Normal
+						   int & gType, int & gIndex, float3 & gPoint, float factor){                //Reflect Ray
+  float3 N = factor * surfaceNormal(gType, gIndex, gPoint, fromPoint);  //Surface Normal
   return normalize((ray - (N * (2 * dot(ray,N)))));     //Approximation to Reflection
 }
 
@@ -305,21 +277,21 @@ __device__ float3 computePixelColor(float x, float y,
     gPoint = (ray * gDist);           //3D Point of Intersection
         
     if (gType == 0 && gIndex == 1){      //Mirror Surface on This Specific Object
-      ray = reflect3(ray,gOrigin, gType,gIndex, gPoint);        //Reflect Ray Off the Surface
+      ray = reflect3(ray,gOrigin, gType,gIndex, gPoint, 1.0);        //Reflect Ray Off the Surface
       raytrace(ray, gPoint, gDist,gType,gIndex,gIntersect);             //Follow the Reflected Ray
       if (gIntersect){ 
 		  gPoint = ( (ray * gDist) + gPoint); 
 	  }
 	} else if(gType == 0 && gIndex == 0) {
-		ray = refract3(ray,gOrigin, gType,gIndex, gPoint);        //Reflect Ray Off the Surface
-		gPoint = ( (ray * 0.00001) + gPoint);
-		raytrace(ray, gPoint, gDist,gType,gIndex,gIntersect);             //Follow the Reflected Ray
+		ray = refract3(ray,gPoint, gType,gIndex, gPoint, 1.0);        //Refract Ray Off the Surface
+		// gPoint = ( (ray * 0.00001) + gPoint);
+		raytrace(ray, (ray * 0.00001) + gPoint, gDist,gType,gIndex,gIntersect);             //Follow the Refracted Ray
 		
 		  if (gIntersect){ 
-			  // gPoint = ( (ray * gDist) + gPoint); 
-			  // ray = innerRefract3(ray,gOrigin, gType,gIndex, gPoint);        //Reflect Ray Off the Surface
-			  gPoint = ( (ray * 0.00001) + gPoint);
-			  raytrace(ray, gPoint, gDist,gType,gIndex,gIntersect);             //Follow the Reflected Ray
+			  gPoint = ( (ray * gDist) + gPoint); 
+			  ray = refract3(ray,gPoint, gType,gIndex, gPoint, -1.0);        //Refract Ray Off from inside the Surface
+			  // gPoint = ( (ray * 0.00001) + gPoint);
+			  raytrace(ray, (ray * 0.00001) + gPoint, gDist,gType,gIndex,gIntersect);             //Follow the Reflected Ray
 			  gPoint = ( (ray * gDist) + gPoint);
 		  }
 	}
@@ -479,7 +451,7 @@ __device__ void emitPhotons(int index, float & gSqDist, float3 & gPoint,
         // drawPhoton(rgb, gPoint);                       //Draw Photon
         shadowPhoton(ray, gDist,gType,gIndex,gIntersect, gPoint, index);                             //Shadow Photon
         
-		ray = reflect3(ray,prevPoint, gType,gIndex, gPoint);                  //Bounce the Photon
+		ray = reflect3(ray,prevPoint, gType,gIndex, gPoint, 1.0);                  //Bounce the Photon
 		
         raytrace(ray, gPoint, gDist,gType,gIndex,gIntersect);                         //Trace It to Next Location
         prevPoint = gPoint;

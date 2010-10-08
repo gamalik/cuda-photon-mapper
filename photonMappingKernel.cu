@@ -4,13 +4,8 @@
 #include <cutil_math.h>
 #include <cutil_inline.h>
 
-#define nrPhotons 5000
-#define NR_PARTICLES 1000
-#define NR_SPHERES 2
-#define NR_SMOKE_SPHERES 1
-
-#define SPHERE 0
-#define PLANE 1
+#define nrPhotons 1000
+#define NR_PARTICLES 100
 
 void checkCUDAError(const char *msg) {
   cudaError_t err = cudaGetLastError();
@@ -24,11 +19,12 @@ void checkCUDAError(const char *msg) {
 	// ----- Scene Description -----
 	__device__ int szImg = 512;                  //Image Size
 	__device__ int nrTypes = 2;                  //2 Object Types (Sphere = 0, Plane = 1)
-	__device__ int nrObjects [] = {3,5};          // 2 regular spheres, 1 smoke bounding sphere, 5 Planes
+	__device__ int nrObjects [] = {2,5};          //2 Spheres, 5 Planes
 	__device__ float gAmbient = 0.1;             //Ambient Lighting
 	__device__ float3 gOrigin; // = make_float3(0.0,0.0,0.0);  //World Origin for Convenient Re-Use Below (Constant)
 	__device__ float3 Light = {0.0,1.4,3.5};   //Point Light-Source Position
-	__device__ float4 spheres[NR_SPHERES+NR_SMOKE_SPHERES+NR_PARTICLES]; // 2 regular spheres, 1 smoke bounding sphere, 1000 particle spheres, {x,y,z,w}=Sphere Center & Radius
+	__device__ float4 spheres[] = {{1.0,-1.0,4.0,0.5}, {-0.6,-1.0,4.5,0.5}, {0.0,0.0,2.5,1.5}};         //Sphere Center & Radius
+	__device__ float4 particles[NR_PARTICLES];
 	__device__ float2 planes[] = {{0, 1.5},{1, -1.5},{0, -1.5},{1, 1.5},{2,5.0}}; //Plane Axis & Distance-to-Origin
 
 	__device__ int numPhotons[2][5]; // = {{0,0},{0,0,0,0,0}};              //Photon Count for Each Scene Object
@@ -39,7 +35,7 @@ void checkCUDAError(const char *msg) {
 	// ----- Photon Mapping -----
 	// __device__ int nrPhotons = 1000;             //Number of Photons Emitted
 	__device__ int nrBounces = 3;                //Number of Times Each Photon Bounces
-	__device__ bool lightPhotons = true;      //Enable Photon Lighting?
+	__device__ bool lightPhotons = false;      //Enable Photon Lighting?
 	__device__ float sqRadius = 0.7;             //Photon Integration Area (Squared for Efficiency)
 	__device__ float exposure = 50.0;            //Number of Photons Integrated at Brightest Pixel
 
@@ -172,16 +168,6 @@ __device__ void raytrace(float3 ray, float3 origin,
   for (int t = 0; t < nrTypes; t++)
     for (int i = 0; i < nrObjects[t]; i++)
       rayObject(t,i,ray,origin,gDist,gType,gIndex,gIntersect);
-}
-
-
-__device__ void particleRayTrace(float3 ray, float3 origin,
-						 float & gDist, int & gType, int & gIndex, bool & gIntersect) {
-	gIntersect = false; //No Intersections Along This Ray Yet
-	gDist = 999999.9;   //Maximum Distance to Any Object
-
-	for (int i = 0; i < NR_PARTICLES; i++)
-	  rayObject(SPHERE,i,ray,origin,gDist,gType,gIndex,gIntersect);
 }
 
 
@@ -651,43 +637,17 @@ __device__ void emitPhotons(int index, float & gSqDist, float3 & gPoint,
 		raytrace(ray, prevPoint, gDist,gType,gIndex,gIntersect);                          //Trace the Photon's Path
 
 		while (gIntersect && bounces <= nrBounces){        //Intersection With New Object
+			gPoint = ( (ray * gDist) + prevPoint);   //3D Point of Intersection
+			rgb =  (getColor(rgb,gType,gIndex) * 1.0/sqrt((float)bounces));
+			storePhoton(gType, gIndex, gPoint, ray, rgb, index);  //Store Photon Info 
+			// drawPhoton(rgb, gPoint);                       //Draw Photon
+			shadowPhoton(ray, gDist,gType,gIndex,gIntersect, gPoint, index);                             //Shadow Photon
+	        
+			ray = reflect3(ray,prevPoint, gType,gIndex, gPoint, 1.0);                  //Bounce the Photon
 			
-			if(gIndex == 2) {
-				// intersected smoke sphere
-				int particleBounces = 0;
-				
-				particleRayTrace(ray, prevPoint, gDist,gType,gIndex,gIntersect);
-				
-				while(gIntersect && particleBounces <= nrBounces) {
-					
-					gPoint = ( (ray * gDist) + prevPoint);   //3D Point of Intersection
-					rgb =  make_float3(1.0,0.0,0.0);
-					// storePhoton(gType, gIndex, gPoint, ray, rgb, index);  //Store Photon Info 
-					if(randomNumbers[index].x > 0.0) {
-						ray = reflect3(ray,prevPoint, gType,gIndex, gPoint, 1.0);                  //Bounce the Photon
-						
-						particleRayTrace(ray, gPoint, gDist,gType,gIndex,gIntersect);                         //Trace It to Next Location
-						prevPoint = gPoint;
-						
-						particleBounces++;
-					}
-				}
-				
-			} else {
-				gPoint = ( (ray * gDist) + prevPoint);   //3D Point of Intersection
-				rgb =  (getColor(rgb,gType,gIndex) * 1.0/sqrt((float)bounces));
-				storePhoton(gType, gIndex, gPoint, ray, rgb, index);  //Store Photon Info 
-				// drawPhoton(rgb, gPoint);                       //Draw Photon
-				shadowPhoton(ray, gDist,gType,gIndex,gIntersect, gPoint, index);                             //Shadow Photon
-				
-				ray = reflect3(ray,prevPoint, gType,gIndex, gPoint, 1.0);                  //Bounce the Photon
-				
-				raytrace(ray, gPoint, gDist,gType,gIndex,gIntersect);                         //Trace It to Next Location
-				prevPoint = gPoint;
-			}
-			
-			
-			/*
+			raytrace(ray, gPoint, gDist,gType,gIndex,gIntersect);                         //Trace It to Next Location
+			prevPoint = gPoint;
+	        
 			if(gIntersect && gType == 0 && gIndex == 0) {
 				// hit a sphere
 				float3 rray = make_float3(0.0f,0.0f,0.0f);  // refracted ray
@@ -713,13 +673,14 @@ __device__ void emitPhotons(int index, float & gSqDist, float3 & gPoint,
 					storePhoton(rType, rIndex, rPoint, rray, rrgb, index);
 					shadowPhoton(rray, rDist,rType,rIndex,rIntersect, rPoint, index);
 				}
-			}*/
+			}
 		
 			
 			
 			bounces++;
 		}
 	}
+  
   
 }
 
@@ -728,27 +689,28 @@ __device__ void emitPhotons(int index, float & gSqDist, float3 & gPoint,
 
 __device__ void positionObjects(float animTime) {
 	
-	
-	// {{1.0,-1.0,4.0,0.5}, {-0.6,-1.0,4.5,0.5}};         //Sphere Center & Radius
-	
 	spheres[0].x = -1.0*cos(animTime+2.3);
-	spheres[0].y = -1.0;
+	// spheres[0].y = -1.0*cos(animTime);
 	spheres[0].z = sin(animTime+2.3)+3.5;
+	/*
+	spheres[0].y = -1.0;
+	spheres[0].z = 4.0;
 	spheres[0].w = 0.5;
-	
-	
+	*/
 	spheres[1].x = 0.0;
 	spheres[1].y = -1.0*sin(0.5*animTime+5.0);
 	spheres[1].z = 3.5;
-	spheres[1].w = 0.5;
-	
-	
-	spheres[2].x = 0.0;
-	spheres[2].y = 0.0;
-	spheres[2].z = 0.0;
-	spheres[2].w = 2.0;
 
-	
+	/*
+	spheres[1].w = 0.5;
+	//spheres[1] = make_float4(-0.6,-1.0,4.5,0.5);
+
+	planes[0] = make_float2(0, 1.5);
+	planes[1] = make_float2(1, -1.5);
+	planes[2] = make_float2(0, -1.5);
+	planes[3] = make_float2(1, 1.5);
+	planes[4] = make_float2(2,5.0);
+	*/
 }
 
 
@@ -828,26 +790,6 @@ __global__ void emit_photons_kernel(float animTime){
 }
 
 
-
-
-__global__ void init_particles_kernel() {
-	int index = blockIdx.x * blockDim.x + threadIdx.x;
-	
-	if(index > 2) {
-		
-		// constrain particle spheres to inside the smoke sphere
-		
-		float range = spheres[2].w;  // smoke sphere radius
-		
-		spheres[index].x = randFloat(range) + spheres[2].x;
-		spheres[index].y = randFloat(range) + spheres[2].y;
-		spheres[index].z = randFloat(range) + spheres[2].z;
-		
-		spheres[index].w = 0.001;  // very small radius
-		
-	}
-}
-
 __global__ void init_random_numbers_kernel() {
 	/*
 	int index = blockIdx.x * blockDim.x + threadIdx.x;
@@ -857,7 +799,7 @@ __global__ void init_random_numbers_kernel() {
 	}
 	*/
 
-	positionObjects(0.0);
+
 
 	for(int i = 0; i < 2000; i++) {
 		randomNumbers[i] = rand3(1.0);
@@ -876,6 +818,14 @@ __global__ void init_photons_kernel(float animTime) {
 }
 
 
+__global__ void init_particles_kernel() {
+	int index = blockIdx.x * blockDim.x + threadIdx.x;
+
+	particles[index].x = randFloat(spheres[2].w) + spheres[2].x;
+	particles[index].y = randFloat(spheres[2].w) + spheres[2].y;
+	particles[index].z = randFloat(spheres[2].w) + spheres[2].z;
+
+}
 
 
 extern "C" void launch_emit_photons_kernel(uchar4* pos, unsigned int image_width, 
@@ -922,24 +872,21 @@ extern "C" void launch_photon_mapping_kernel(uchar4* pos, unsigned int image_wid
 
 extern "C" void launch_init_random_numbers_kernel() {
 
-	/*
+	
 	int nThreads=100;
-	int totalThreads = 10000;
+	int totalThreads = NR_PARTICLES;
 	int nBlocks = totalThreads/nThreads; 
 	nBlocks += ((totalThreads%nThreads)>0)?1:0;
-	*/
+	
 
 	init_random_numbers_kernel<<< 1, 1 >>>();
 	cudaThreadSynchronize();
 	checkCUDAError("kernel failed!");
-	
-	
-	int nThreads=100;
-	int totalThreads = NR_SPHERES+NR_SMOKE_SPHERES+NR_PARTICLES;
-	int nBlocks = totalThreads/nThreads; 
-	nBlocks += ((totalThreads%nThreads)>0)?1:0;
-	init_particles_kernel<<< nBlocks, nThreads>>>();
-	
+
+
+	init_particles_kernel<<< nBlocks, nThreads >>>();
+	cudaThreadSynchronize();
+	checkCUDAError("kernel failed!");
 }
 
 

@@ -16,7 +16,7 @@
 #include <rendercheck_gl.h>
 
 // variables for keyboard control
-int animFlag=1;
+int animFlag=0;
 int emitFlag=1;
 int iter = 0;
 float animTime=0.0f;

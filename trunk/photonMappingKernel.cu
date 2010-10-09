@@ -6,7 +6,8 @@
 
 #define nrPhotons 1000
 #define NR_PARTICLES 1000
-#define MAX_VOL_PHOTONS_PER_THREAD 100
+#define MAX_VOL_PHOTONS_PER_THREAD 1000
+#define PARTICLE_RADIUS 0.01
 
 void checkCUDAError(const char *msg) {
   cudaError_t err = cudaGetLastError();
@@ -24,7 +25,7 @@ void checkCUDAError(const char *msg) {
 	__device__ float gAmbient = 0.1;             //Ambient Lighting
 	__device__ float3 gOrigin; // = make_float3(0.0,0.0,0.0);  //World Origin for Convenient Re-Use Below (Constant)
 	__device__ float3 Light = {0.0,1.4,3.5};   //Point Light-Source Position
-	__device__ float4 spheres[] = {{1.0,-1.0,4.0,0.5}, {-0.6,-1.0,4.5,0.5}, {0.0,0.0,2.5,0.8}};         //Sphere Center & Radius
+	__device__ float4 spheres[] = {{1.0,-1.0,4.0,0.5}, {-0.6,-1.0,4.5,0.5}, {0.0,0.0,2.5,1.0}};         //Sphere Center & Radius
 	__device__ float4 particles[NR_PARTICLES];
 	__device__ float2 planes[] = {{0, 1.5},{1, -1.5},{0, -1.5},{1, 1.5},{2,5.0}}; //Plane Axis & Distance-to-Origin
 
@@ -249,7 +250,7 @@ __device__ float3 gatherVolumePhotons(float3 p, int type, int id, float & gSqDis
 	for (int i = 0; i < nrPhotons; i++){
 		for(int j = 0; j < numVolumePhotons[i]; j++) {
 			//Photons Which Hit Current Object
-			if (gatedSqDist3(p,volumePhotons[i][j],sqRadius,gSqDist)){           //Is Photon Close to Point?
+			if (gatedSqDist3(p,volumePhotons[i][j],0.05,gSqDist)){           //Is Photon Close to Point?
 				energy = energy + 0.1*make_float3(1.0,1.0,1.0);
 			}
 		}		
@@ -336,6 +337,7 @@ __device__ float3 refract3(float3 ray, float3 fromPoint,
 		if(factor == -1.0) {
 			n = 1.0;
 		}
+		
 
 		float cosI = - dot(normal, ray);
 		float cosT2 = 1.0 - (n * n * (1.0 - cosI * cosI));
@@ -498,17 +500,17 @@ __device__ void handleReflection2(float3 & ray, float3 & gOrigin, int & gType, i
 
 
 __device__ void handleRefraction(float3 & ray, float3 & gOrigin, int & gType, int & gIndex, 
-								 float3 & gPoint, bool & gIntersect, float & gDist) {
+								 float3 & gPoint, bool & gIntersect, float & gDist, bool ignoreSmokeSphere) {
 	ray = refract3(ray,gPoint, gType,gIndex, gPoint, 1.0);        //Refract Ray Off the Surface
 	gPoint = ( (ray * 0.00001) + gPoint);
-	raytrace(ray, gPoint, gDist,gType,gIndex,gIntersect,true);             //Follow the Refracted Ray
+	raytrace(ray, gPoint, gDist,gType,gIndex,gIntersect,ignoreSmokeSphere);             //Follow the Refracted Ray
 	gPoint = ( (ray * gDist) + gPoint);
 
 	if(gIntersect && gType == 0 && gIndex == 0) {
 		
 		ray = refract3(ray,gPoint, gType,gIndex, gPoint, -1.0);        //Refract Ray Off from inside the Surface
 		gPoint = ( (ray * 0.00001) + gPoint);
-		raytrace(ray, gPoint, gDist,gType,gIndex,gIntersect,true);             //Follow the Reflected Ray
+		raytrace(ray, gPoint, gDist,gType,gIndex,gIntersect,ignoreSmokeSphere);             //Follow the Reflected Ray
 		gPoint = ( (ray * gDist) + gPoint);
 
 		if (gType == 0 && gIndex == 1){      //Mirror Surface on This Specific Object
@@ -522,13 +524,13 @@ __device__ void handleRefraction(float3 & ray, float3 & gOrigin, int & gType, in
 
 
 __device__ void handleReflection(float3 & ray, float3 & gOrigin, int & gType, int & gIndex, 
-								 float3 & gPoint, bool & gIntersect, float & gDist) {
+								 float3 & gPoint, bool & gIntersect, float & gDist, bool ignoreSmokeSphere) {
 	ray = reflect3(ray,gOrigin, gType,gIndex, gPoint, 1.0);        //Reflect Ray Off the Surface
-	raytrace(ray, gPoint, gDist,gType,gIndex,gIntersect,true);             //Follow the Reflected Ray
+	raytrace(ray, gPoint, gDist,gType,gIndex,gIntersect,ignoreSmokeSphere);             //Follow the Reflected Ray
 	if (gIntersect){ 
 		gPoint = ( (ray * gDist) + gPoint);
 		if(gType == 0 && gIndex == 0) {
-			handleRefraction(ray, gOrigin, gType, gIndex, gPoint, gIntersect, gDist);
+			handleRefraction(ray, gOrigin, gType, gIndex, gPoint, gIntersect, gDist, ignoreSmokeSphere);
 		}
 	}
 }
@@ -556,16 +558,16 @@ __device__ float3 computePixelColor(float x, float y,
 		
 			// ray marching
 			
-			int numSteps = 1;
+			int numSteps = 6;
 			
 			for(int i = 0; i < numSteps; i++) {
-				gPoint = gPoint + ray*0.001;
+				gPoint = gPoint + ray*0.1;
 				rgb += gatherVolumePhotons(gPoint,gType,gIndex, gSqDist);
 			}
 
 			// get out of smoke bounding sphere
-			raytrace(ray, gOrigin,gDist,gType,gIndex,gIntersect,true);
-			gPoint = (ray * gDist);
+			raytrace(ray, gPoint,gDist,gType,gIndex,gIntersect,true);
+			gPoint = (ray * gDist) + gPoint;
 		
 		} else {
 			particleRayTrace(ray, gPoint,gDist,gType,gIndex,gIntersect);
@@ -587,9 +589,9 @@ __device__ float3 computePixelColor(float x, float y,
 	if(gIntersect) {
 		
 		if (gType == 0 && gIndex == 1){      //Mirror Surface on This Specific Object
-			handleReflection(ray, gOrigin, gType, gIndex, gPoint, gIntersect, gDist);
+			handleReflection(ray, gOrigin, gType, gIndex, gPoint, gIntersect, gDist, true);
 		} else if(gType == 0 && gIndex == 0) {
-			handleRefraction(ray, gOrigin, gType, gIndex, gPoint, gIntersect, gDist);
+			handleRefraction(ray, gOrigin, gType, gIndex, gPoint, gIntersect, gDist, true);
 		}
 		
 		//3D Point of Intersection
@@ -689,8 +691,11 @@ __device__ void shadowPhoton(float3 ray,
 
 __device__ void storeVolumePhoton(float3 gPoint, int index) {
 
-	volumePhotons[index][numVolumePhotons[index]] = gPoint;
-	numVolumePhotons[index]++;
+	if(numVolumePhotons[index] < MAX_VOL_PHOTONS_PER_THREAD) {
+		volumePhotons[index][numVolumePhotons[index]] = gPoint;
+		numVolumePhotons[index]++;
+	}
+	
 }
 
 
@@ -719,6 +724,7 @@ __device__ void emitPhotons(int index, float & gSqDist, float3 & gPoint,
 
 		//Spread Out Light Source, But Don't Allow Photons Outside Room/Inside Sphere
 		int k = 0;
+		/*
 		while (prevPoint.y >= Light.y && k < 10000){ 
 		// for(int k = 0; k < 100; k++){
 			// prevPoint = (Light + (normalize(rand3(1.0)) * 0.75));
@@ -731,6 +737,7 @@ __device__ void emitPhotons(int index, float & gSqDist, float3 & gPoint,
 			gatedSqDist3(prevPoint,make_float3(spheres[0].x,spheres[0].y,spheres[0].z),spheres[0].w*spheres[0].w, gSqDist)) {
 			bounces = nrBounces+1;
 		}
+		*/
 
 		raytrace(ray, Light, gDist,gType,gIndex,gIntersect,false);                          //Trace the Photon's Path
 		// raytrace(ray, prevPoint, gDist,gType,gIndex,gIntersect);
@@ -745,6 +752,7 @@ __device__ void emitPhotons(int index, float & gSqDist, float3 & gPoint,
 			
 			if(gType == 0 && gIndex == 2) {
 				// hit smoke bounding sphere
+				gPoint = ray * gDist + Light;
 				
 				// intersected smoke bounding sphere
 				// ray trace to particle sphere
@@ -752,13 +760,17 @@ __device__ void emitPhotons(int index, float & gSqDist, float3 & gPoint,
 				
 				int particleBounces = 0;
 				
-				while(gIntersect && particleBounces < 10) {
+				if(gIntersect) {
+					gPoint = ( (ray * gDist) + gPoint);
+				}
+				
+				while(gIntersect && particleBounces < MAX_VOL_PHOTONS_PER_THREAD) {
 					
 					// store volume photon
 					
 					storeVolumePhoton(gPoint, index);
 					
-					ray = reflect3(ray,prevPoint, gType,gIndex, gPoint, 1.0);                  //Bounce the Photon
+					ray = particleReflect3(ray,gPoint, gType,gIndex, gPoint, 1.0);                  //Bounce the Photon
 					particleRayTrace(ray, gPoint,gDist,gType,gIndex,gIntersect);                         //Trace It to Next Location
 					
 					if(gIntersect) {
@@ -770,13 +782,14 @@ __device__ void emitPhotons(int index, float & gSqDist, float3 & gPoint,
 				
 				// get out of smoke bounding sphere
 				raytrace(ray, gPoint,gDist,gType,gIndex,gIntersect,true);
-				gPoint = (ray * gDist);
+				prevPoint = gPoint;
+				// gPoint = gPoint + (ray * gDist);
 				
 				
 			} else {
 			
 				if(caustics) {
-					rgb = 4.0*make_float3(1.0,1.0,1.0);
+					rgb = 8.0*make_float3(1.0,1.0,1.0);
 					storePhoton(gType, gIndex, gPoint, ray, rgb, index);  //Store Photon Info 
 				} else {
 					rgb =  2.0*(getColor(rgb,gType,gIndex) * 1.0/sqrt((float)bounces));
@@ -788,14 +801,14 @@ __device__ void emitPhotons(int index, float & gSqDist, float3 & gPoint,
 				
 				
 				if (gType == 0 && gIndex == 1){      //Mirror Surface on This Specific Object
-					handleReflection(ray, prevPoint, gType, gIndex, gPoint, gIntersect, gDist);
+					handleReflection(ray, prevPoint, gType, gIndex, gPoint, gIntersect, gDist, false);
 					caustics = false;
 				} else if(gType == 0 && gIndex == 0) {
-					handleRefraction(ray, prevPoint, gType, gIndex, gPoint, gIntersect, gDist);
+					handleRefraction(ray, prevPoint, gType, gIndex, gPoint, gIntersect, gDist, false);
 					caustics = true;
 				} else {
 					ray = reflect3(ray,prevPoint, gType,gIndex, gPoint, 1.0);                  //Bounce the Photon
-					raytrace(ray, gPoint, gDist,gType,gIndex,gIntersect,true);                         //Trace It to Next Location
+					raytrace(ray, gPoint, gDist,gType,gIndex,gIntersect,false);                         //Trace It to Next Location
 					caustics = false;
 				}
 				
@@ -815,9 +828,9 @@ __device__ void emitPhotons(int index, float & gSqDist, float3 & gPoint,
 
 __device__ void positionObjects(float animTime) {
 	
-	spheres[0].x = -1.0*cos(animTime+2.3);
+	spheres[0].x = 1.0*cos(animTime);
 	// spheres[0].y = -1.0*cos(animTime);
-	spheres[0].z = sin(animTime+2.3)+3.5;
+	spheres[0].z = sin(animTime)+3.5;
 	/*
 	spheres[0].y = -1.0;
 	spheres[0].z = 4.0;
@@ -947,10 +960,10 @@ __global__ void init_photons_kernel(float animTime) {
 __global__ void init_particles_kernel() {
 	int index = blockIdx.x * blockDim.x + threadIdx.x;
 
-	particles[index].x = 0.5*sin((float)index+index*cos((float)index)); // + spheres[2].x;
-	particles[index].y = 0.5*cos((float)index+index*sin((float)index)); // + spheres[2].y;
-	particles[index].z = 0.5*sin((float)index+index*cos((float)index))+2.5;// randFloat(spheres[2].w) + spheres[2].z;
-	particles[index].w = 0.01; // very small radius
+	particles[index].x = sin((float)index+index*cos((float)index)); // + spheres[2].x;
+	particles[index].y = cos((float)index+index*sin((float)index)); // + spheres[2].y;
+	particles[index].z = sin((float)index+index*cos((float)index))+2.5;// randFloat(spheres[2].w) + spheres[2].z;
+	particles[index].w = PARTICLE_RADIUS; // very small radius
 
 }
 

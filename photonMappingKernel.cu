@@ -4,22 +4,28 @@
 #include <cutil_math.h>
 #include <cutil_inline.h>
 
-#define NR_PHOTONS_X 32
-#define NR_PHOTONS_Y 32
-#define NR_PHOTONS_Z 32
+#define MAX_SEARCH_RADIUS 10
+#define ENERGY_WEIGHT 0.0025
+#define CAUSTICS_PHOTONS 100
+
+#define NR_PHOTONS_X 384
+#define NR_PHOTONS_Y 384
+#define NR_PHOTONS_Z 384
 
 #define WORLD_DIM_X 3.0
 #define WORLD_DIM_Y 3.0
 #define WORLD_DIM_Z 6.0
 
-#define MAX_SEARCH_RADIUS 5
-
-#define nrPhotons 70000
-
 #define NR_PARTICLES 1000
 #define MAX_VOL_PHOTONS_PER_THREAD 1000
 #define PARTICLE_RADIUS 0.01
-#define RANDOM_NUMS 70000
+
+#define nrPhotons 100000
+#define RANDOM_NUMS 10000
+
+#define X_AXIS 0
+#define Y_AXIS 1
+#define Z_AXIS 2
 
 void checkCUDAError(const char *msg) {
   cudaError_t err = cudaGetLastError();
@@ -37,9 +43,15 @@ void checkCUDAError(const char *msg) {
 	__device__ float gAmbient = 0.1;             //Ambient Lighting
 	__device__ float3 gOrigin; // = make_float3(0.0,0.0,0.0);  //World Origin for Convenient Re-Use Below (Constant)
 	__device__ float3 Light = {0.0,1.4,3.5};   //Point Light-Source Position
-	__device__ float4 spheres[] = {{1.0,-1.0,1.0,0.5}, {-0.6,-1.0,4.5,0.5}, {0.0,0.0,1.5,1.0}};         //Sphere Center & Radius
+	__device__ float4 spheres[] = {{1.0,-1.0,1.0,0.4}, {-0.6,-1.0,4.5,0.4}, {0.0,0.0,1.5,1.0}};         //Sphere Center & Radius
 	__device__ float4 particles[NR_PARTICLES];
-	__device__ float2 planes[] = {{0, WORLD_DIM_X / 2.0},{1, - WORLD_DIM_Y / 2.0},{0, - WORLD_DIM_X / 2.0},{1, WORLD_DIM_Y / 2.0},{2, WORLD_DIM_Z}}; //Plane Axis & Distance-to-Origin
+	__device__ float2 planes[] = {
+		{X_AXIS, WORLD_DIM_X / 2.0},
+		{Y_AXIS, - WORLD_DIM_Y / 2.0},
+		{X_AXIS, - WORLD_DIM_X / 2.0},
+		{Y_AXIS, WORLD_DIM_Y / 2.0},
+		{Z_AXIS, WORLD_DIM_Z}
+	}; //Plane Axis & Distance-to-Origin
 
 	// __device__ int numPhotons[2][5]; // = {{0,0},{0,0,0,0,0}};              //Photon Count for Each Scene Object
 	
@@ -57,6 +69,7 @@ void checkCUDAError(const char *msg) {
 	// __device__ int nrPhotons = 1000;             //Number of Photons Emitted
 	__device__ int nrBounces = 5;                //Number of Times Each Photon Bounces
 	__device__ bool lightPhotons = true;      //Enable Photon Lighting?
+	__device__ bool interpolate = true;
 	__device__ float sqRadius = 1.0;             //Photon Integration Area (Squared for Efficiency)
 	__device__ float causticsSqRadius = 0.025;
 	__device__ float volumeSqRadius = 0.05;
@@ -296,15 +309,17 @@ __device__ float sqDistance(int3 a, int3 b) {
 __device__ float3 computeEnergy(float3 energy, float3 p, int3 worldPoint, int i, int j, int k) {
 	// float weight = max(0.0, -dot(N, photons[i][j][k][0] ));   //Single Photon Diffuse Lighting
 	// weight *= (1.0 - sqrt(gSqDist)) / exposure;                    //Weight by Photon-Point Distance
-	float weight = 0.0025;
-	float dist = 0.0001*sqDistance(worldPoint, make_int3(i,j,k));
 	
+	/*
+	float dist = 0.0001*sqDistance(worldPoint, make_int3(i,j,k));
 	weight -= dist;
+	*/
 
-	float3 totEnergy = (energy + (photons[i][j][k] * weight)); //Add Photon's Energy to Total
+	float3 totEnergy = (energy + (photons[i][j][k] * ENERGY_WEIGHT)); //Add Photon's Energy to Total
 	//totEnergy -= dist*make_float3(1.0,1.0,1.0);
 	
 
+	/*
 	float3 roundedCenter = getWorldCoordinates(worldPoint);
 	roundedCenter += make_float3(((float) WORLD_DIM_X) / (NR_PHOTONS_X * 2.0),
 								 ((float) WORLD_DIM_Y) / (NR_PHOTONS_Y * 2.0),
@@ -312,7 +327,8 @@ __device__ float3 computeEnergy(float3 energy, float3 p, int3 worldPoint, int i,
 
 	float distance = 0.001*sqDistancef(p, roundedCenter);
 	totEnergy -= (distance*make_float3(1.0,1.0,1.0));
-	
+	*/
+
 	return totEnergy;
 }
 
@@ -408,68 +424,202 @@ __device__ float3 centerPoint(float3 p) {
 
 
 
-__device__ float3 gatherPhotons(float3 p, int type, int id, float & gSqDist){
+__device__ float getAlpha(float3 p, float3 p1, float3 p2, int axis) {
+
+	float alfa = 0.5;
+
+	switch(axis) {
+		case X_AXIS:
+			alfa = (p.x - p1.x) / (p2.x - p1.x);
+			break;
+		case Y_AXIS:
+			alfa = (p.y - p1.y) / (p2.y - p1.y);
+			break;
+		default:
+			alfa = (p.z - p1.z) / (p2.z - p1.z);
+			break;
+	}
+
+	return alfa;
+}
+
+
+__device__ float3 interpolate3f(float3 p1, float3 p2, float alfa) {
+	return (1.0 - alfa) * p1 + alfa * p2;
+}
+
+__device__ float getVoxelDim(int axis) {
+
+	switch(axis) {
+		case X_AXIS:
+			return ((float)WORLD_DIM_X / (float)NR_PHOTONS_X);
+		case Y_AXIS:
+			return ((float)WORLD_DIM_Y / (float)NR_PHOTONS_Y);
+		default:
+			return ((float)WORLD_DIM_Z / (float)NR_PHOTONS_Z);
+	}
 	
-	float3 energy = make_float3(0.0,0.0,0.0);  
-	float3 N = surfaceNormal(type, id, p, gOrigin);                   //Surface Normal at Current Point
+}
+
+
+__device__ float3 bilinearInterpolate(float3 p, float3 p1, float3 p2, float3 p3, float3 p4,
+									  float3 energy, int type, int id, float & gSqDist, 
+									  int firstAxis, int secondAxis) {
+	float3 c;
+
+	int3 worldPoint1 = getVoxelCoordinates(p1);
+	float3 c1 = integrate(p1, energy, worldPoint1, type, id, gSqDist);
 	
+	int3 worldPoint2 = getVoxelCoordinates(p2);
+	float3 c2 = integrate(p2, energy, worldPoint2, type, id, gSqDist);
+	
+	int3 worldPoint3 = getVoxelCoordinates(p3);
+	float3 c3 = integrate(p3, energy, worldPoint3, type, id, gSqDist);
+	
+	int3 worldPoint4 = getVoxelCoordinates(p4);
+	float3 c4 = integrate(p4, energy, worldPoint4, type, id, gSqDist);
+
+	float alfa = getAlpha(p, p1, p2, firstAxis);
+	float3 p12 = interpolate3f(p1, p2, alfa);
+	float3 c12 = interpolate3f(c1, c2, alfa);
+
+	alfa = getAlpha(p, p3, p4, firstAxis);
+	float3 p34 = interpolate3f(p3, p4, alfa);
+	float3 c34 = interpolate3f(c3, c4, alfa);
+
+	alfa = getAlpha(p, p12, p34, secondAxis);
+	c = interpolate3f(c12, c34, alfa);
+
+	return c;
+}
+
+
+
+__device__ float3 interpolateEnergy(float3 p, float3 energy, int type, int id, float & gSqDist) {
+
+	float3 c = energy;
+
 	if(type == 1) {
 		// interpolate along plane axis
 		if(id == 0 || id == 2) {
 			// interpolate along x-axis
 			
+			float3 p1 = centerPoint(p);
+			float3 p2 = make_float3(0.0,0.0,0.0);
+			float3 p3 = make_float3(0.0,0.0,0.0);
+			float3 p4 = make_float3(0.0,0.0,0.0);
+
+			if(p.x > p1.z) {
+				p2.z = p1.z + getVoxelDim(Z_AXIS);
+				p3.z = p1.z + getVoxelDim(Z_AXIS);
+				p4.z = p1.z;
+			} else {
+				p2.z = p1.z - getVoxelDim(Z_AXIS);
+				p3.z = p1.z - getVoxelDim(Z_AXIS);
+				p4.z = p1.z;
+			}
+
+			if(p.y > p1.y) {
+				p2.y = p1.y;
+				p3.y = p1.y + getVoxelDim(Y_AXIS);
+				p4.y = p1.y + getVoxelDim(Y_AXIS);
+			} else {
+				p2.y = p1.y;
+				p3.y = p1.y - getVoxelDim(Y_AXIS);
+				p4.y = p1.y - getVoxelDim(Y_AXIS);
+			}
+
+			c = bilinearInterpolate(p, p1, p2, p3, p4,
+									energy, type, id, gSqDist, 
+									Z_AXIS, Y_AXIS);
+
+
 		} else if(id == 1 || id == 3) {
 			// interpolate along y-axis
 			
-		} else if(id == 4) {
-			// interpolate along z-axis
-			int k = NR_PHOTONS_Z - 1;
-			
-			float3 p1 = center(p);
+			float3 p1 = centerPoint(p);
 			float3 p2 = make_float3(0.0,0.0,0.0);
 			float3 p3 = make_float3(0.0,0.0,0.0);
 			float3 p4 = make_float3(0.0,0.0,0.0);
 
 			if(p.x > p1.x) {
-				p2.x = p1.x + ((float)WORLD_DIM_X / (NR_PHOTONS_X*2.0));
-				p3.x = p1.x + ((float)WORLD_DIM_X / (NR_PHOTONS_X*2.0));
+				p2.x = p1.x + getVoxelDim(X_AXIS);
+				p3.x = p1.x + getVoxelDim(X_AXIS);
 				p4.x = p1.x;
 			} else {
-				p2.x = p1.x - ((float)WORLD_DIM_X / (NR_PHOTONS_X*2.0));
-				p3.x = p1.x - ((float)WORLD_DIM_X / (NR_PHOTONS_X*2.0));
+				p2.x = p1.x - getVoxelDim(X_AXIS);
+				p3.x = p1.x - getVoxelDim(X_AXIS);
 				p4.x = p1.x;
 			}
 
+			if(p.z > p1.z) {
+				p2.z = p1.z;
+				p3.z = p1.z + getVoxelDim(Z_AXIS);
+				p4.z = p1.z + getVoxelDim(Z_AXIS);
+			} else {
+				p2.z = p1.z;
+				p3.z = p1.z - getVoxelDim(Z_AXIS);
+				p4.z = p1.z - getVoxelDim(Z_AXIS);
+			}
+
+			c = bilinearInterpolate(p, p1, p2, p3, p4,
+									energy, type, id, gSqDist, 
+									X_AXIS, Z_AXIS);
+
+		} else if(id == 4) {
+			// interpolate along z-axis
+			
+			float3 p1 = centerPoint(p);
+			float3 p2 = make_float3(0.0,0.0,0.0);
+			float3 p3 = make_float3(0.0,0.0,0.0);
+			float3 p4 = make_float3(0.0,0.0,0.0);
+
+			if(p.x > p1.x) {
+				p2.x = p1.x + getVoxelDim(X_AXIS);
+				p3.x = p1.x + getVoxelDim(X_AXIS);
+				p4.x = p1.x;
+			} else {
+				p2.x = p1.x - getVoxelDim(X_AXIS);
+				p3.x = p1.x - getVoxelDim(X_AXIS);
+				p4.x = p1.x;
+			}
 
 			if(p.y > p1.y) {
 				p2.y = p1.y;
-				p3.y = p1.y + ((float)WORLD_DIM_Y / (NR_PHOTONS_Y*2.0));
-				p4.y = p1.y + ((float)WORLD_DIM_Y / (NR_PHOTONS_Y*2.0));
+				p3.y = p1.y + getVoxelDim(Y_AXIS);
+				p4.y = p1.y + getVoxelDim(Y_AXIS);
 			} else {
 				p2.y = p1.y;
-				p3.y = p1.y - ((float)WORLD_DIM_Y / (NR_PHOTONS_Y*2.0));
-				p4.y = p1.y - ((float)WORLD_DIM_Y / (NR_PHOTONS_Y*2.0));
+				p3.y = p1.y - getVoxelDim(Y_AXIS);
+				p4.y = p1.y - getVoxelDim(Y_AXIS);
 			}
 
-			int3 worldPoint1 = getVoxelCoordinates(p1);
-			float3 c1 = integrate(p1, energy, worldPoint1, type, id, gSqDist);
-			
-			int3 worldPoint2 = getVoxelCoordinates(p2);
-			float3 c2 = integrate(p2, energy, worldPoint2, type, id, gSqDist);
-			
-			int3 worldPoint3 = getVoxelCoordinates(p3);
-			float3 c3 = integrate(p3, energy, worldPoint3, type, id, gSqDist);
-			
-			int3 worldPoint4 = getVoxelCoordinates(p4);
-			float3 c4 = integrate(p4, energy, worldPoint4, type, id, gSqDist);
-
-			
+			c = bilinearInterpolate(p, p1, p2, p3, p4,
+									energy, type, id, gSqDist, 
+									X_AXIS, Y_AXIS);
 
 		}
-
 	} 
 
-	return energy;							
+	return c;
+
+}
+
+
+__device__ float3 gatherPhotons(float3 p, int type, int id, float & gSqDist){
+	
+	float3 energy = make_float3(0.0,0.0,0.0);  
+	float3 N = surfaceNormal(type, id, p, gOrigin);                   //Surface Normal at Current Point
+	
+	if(interpolate) {
+		float3 c = interpolateEnergy(p, energy, type, id, gSqDist);
+		return c;
+	} else {
+		int3 worldPoint = getVoxelCoordinates(p);
+		float3 c = integrate(p, energy, worldPoint, type, id, gSqDist);
+		return c;
+	}
+
 }
 
 
@@ -841,7 +991,7 @@ __device__ void storePhoton(int type, int id, float3 location, float3 direction,
   voxelPoint.z = voxelPoint.z < 0 ? 0 : voxelPoint.z;
 
   //photons[voxelPoint.x][voxelPoint.y][voxelPoint.z][0] = direction; //Direction
-  photons[voxelPoint.x][voxelPoint.y][voxelPoint.z] = energy; // (energy + photonWeight*(photons[voxelPoint.x][voxelPoint.y][voxelPoint.z][1])); //Add Photon's Energy to Total
+  photons[voxelPoint.x][voxelPoint.y][voxelPoint.z] += energy; // (energy + photonWeight*(photons[voxelPoint.x][voxelPoint.y][voxelPoint.z][1])); //Add Photon's Energy to Total
 
   __threadfence();  // make sure every thread sees the change
 
@@ -883,7 +1033,7 @@ __device__ void emitPhotons(int index, float & gSqDist, float3 & gPoint,
 		// float3 ray = normalize( rand3(1.0) );    //Randomize Direction of Photon Emission
 		float3 ray = normalize( randomNumbers[index] );    //Randomize Direction of Photon Emission
 		
-		if(index < 5000) {
+		if(index < CAUSTICS_PHOTONS) {
 			// aim first 2000 photons in the direction of crystal sphere
 			ray = normalize( make_float3(spheres[0].x, spheres[0].y, spheres[0].z) - Light );
 			ray += 0.01*normalize( randomNumbers[index] );
@@ -1141,13 +1291,6 @@ __global__ void init_random_numbers_kernel() {
 
 
 
-__global__ void init_photons_kernel(float animTime) {
-
-	positionObjects(animTime);
-
-	
-}
-
 
 __global__ void init_particles_kernel() {
 	int index = blockIdx.x * blockDim.x + threadIdx.x;
@@ -1160,11 +1303,41 @@ __global__ void init_particles_kernel() {
 }
 
 
+__global__ void init_photons_kernel(float animTime) {
+
+	int i = blockDim.x + blockIdx.x;
+	int j = blockDim.y + blockDim.y;
+	int k = threadIdx.x;
+
+	/*
+	if(	i > 0 && i < NR_PHOTONS_X &&
+		j > 0 && j < NR_PHOTONS_Y &&
+		k > 0 && k < NR_PHOTONS_Z) {
+	*/
+	 for(int i = 0; i < NR_PHOTONS_X; i++) {
+		 for(int j = 0; j < NR_PHOTONS_Y; j++) {
+			 for(int k = 0; k < NR_PHOTONS_Z; k++) {
+
+				photons[i][j][k].x = 0.0;
+				photons[i][j][k].y = 0.0;
+				photons[i][j][k].z = 0.0;
+			}
+		}
+	}
+
+	positionObjects(animTime);
+
+	
+}
+
 extern "C" void launch_emit_photons_kernel(uchar4* pos, unsigned int image_width, 
 							  unsigned int image_height, float animTime) {
 
 	
-	init_photons_kernel<<< 1,1>>>(animTime);
+	int threadsPerBlock = 1; //NR_PHOTONS_Z;
+	int numBlocks = 1; //(NR_PHOTONS_X, NR_PHOTONS_Y);
+	
+	init_photons_kernel<<< numBlocks, threadsPerBlock>>>(animTime);
 
 	cudaThreadSynchronize();
 

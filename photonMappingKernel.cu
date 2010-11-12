@@ -4,8 +4,8 @@
 #include <cutil_math.h>
 #include <cutil_inline.h>
 
-#define MAX_SEARCH_RADIUS 10
-#define ENERGY_WEIGHT 0.0025
+#define MAX_SEARCH_RADIUS 5
+#define ENERGY_WEIGHT 0.00025
 #define CAUSTICS_PHOTONS 100
 
 #define NR_PHOTONS_X 384
@@ -20,8 +20,8 @@
 #define MAX_VOL_PHOTONS_PER_THREAD 1000
 #define PARTICLE_RADIUS 0.01
 
-#define nrPhotons 100000
-#define RANDOM_NUMS 10000
+#define nrPhotons 5000000
+#define RANDOM_NUMS 5000000
 
 #define X_AXIS 0
 #define Y_AXIS 1
@@ -69,7 +69,7 @@ void checkCUDAError(const char *msg) {
 	// __device__ int nrPhotons = 1000;             //Number of Photons Emitted
 	__device__ int nrBounces = 5;                //Number of Times Each Photon Bounces
 	__device__ bool lightPhotons = true;      //Enable Photon Lighting?
-	__device__ bool interpolate = true;
+	__device__ bool interpolate = false;
 	__device__ float sqRadius = 1.0;             //Photon Integration Area (Squared for Efficiency)
 	__device__ float causticsSqRadius = 0.025;
 	__device__ float volumeSqRadius = 0.05;
@@ -1305,24 +1305,24 @@ __global__ void init_particles_kernel() {
 
 __global__ void init_photons_kernel(float animTime) {
 
-	int i = blockDim.x + blockIdx.x;
-	int j = blockDim.y + blockDim.y;
+	int i = blockIdx.x;
+	int j = blockIdx.y;
 	int k = threadIdx.x;
 
+	
+	if(	i >= 0 && i < NR_PHOTONS_X &&
+		j >= 0 && j < NR_PHOTONS_Y &&
+		k >= 0 && k < NR_PHOTONS_Z) {
 	/*
-	if(	i > 0 && i < NR_PHOTONS_X &&
-		j > 0 && j < NR_PHOTONS_Y &&
-		k > 0 && k < NR_PHOTONS_Z) {
-	*/
 	 for(int i = 0; i < NR_PHOTONS_X; i++) {
 		 for(int j = 0; j < NR_PHOTONS_Y; j++) {
 			 for(int k = 0; k < NR_PHOTONS_Z; k++) {
-
+	*/
 				photons[i][j][k].x = 0.0;
 				photons[i][j][k].y = 0.0;
 				photons[i][j][k].z = 0.0;
-			}
-		}
+			//}
+		//}
 	}
 
 	positionObjects(animTime);
@@ -1334,8 +1334,8 @@ extern "C" void launch_emit_photons_kernel(uchar4* pos, unsigned int image_width
 							  unsigned int image_height, float animTime) {
 
 	
-	int threadsPerBlock = 1; //NR_PHOTONS_Z;
-	int numBlocks = 1; //(NR_PHOTONS_X, NR_PHOTONS_Y);
+	int threadsPerBlock = NR_PHOTONS_Z;
+	dim3 numBlocks(NR_PHOTONS_X, NR_PHOTONS_Y);
 	
 	init_photons_kernel<<< numBlocks, threadsPerBlock>>>(animTime);
 

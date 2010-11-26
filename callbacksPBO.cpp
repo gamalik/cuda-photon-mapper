@@ -18,6 +18,10 @@
 // variables for keyboard control
 int animFlag=0;
 int emitFlag=1;
+
+bool interpolateFlag = false;
+bool participatingMediaFlag = false;
+
 int iter = 0;
 float animTime=0.0f;
 float animInc=0.1f;
@@ -34,8 +38,8 @@ void runCuda(int numPhotons [][5],
 
 void renderCuda(float3 pixelData[]);
 
-void photonMappingCuda();
-void simpleRunCuda();
+void photonMappingCuda(bool,bool);
+void simpleRunCuda(bool, bool);
 void initRandomNumbers();
 
 
@@ -54,9 +58,9 @@ void display()
 	}
 	
 	if(emitFlag)
-		simpleRunCuda();
+		simpleRunCuda(interpolateFlag, participatingMediaFlag);
 
-  photonMappingCuda();
+  photonMappingCuda(interpolateFlag, participatingMediaFlag);
 
   // Create a texture from the buffer
   glBindBuffer( GL_PIXEL_UNPACK_BUFFER, pbo);
@@ -88,6 +92,8 @@ void display()
   glutSwapBuffers();
 
   // if animFlag is true, then indicate the display needs to be redrawn
+  
+  
   if(animFlag) {
     glutPostRedisplay();
     animTime += animInc;
@@ -110,6 +116,17 @@ void keyboard(unsigned char key, int x, int y)
   case 'E':
     emitFlag = (emitFlag)?0:1;
     break;
+
+  case 'i':
+  case 'I':
+	  interpolateFlag = !interpolateFlag;
+	  break;
+
+  case 'p':
+  case 'P':
+	  participatingMediaFlag = ! participatingMediaFlag;
+	  break;
+
   case '-': // decrease the time increment for the CUDA kernel
     animInc -= 0.01;
     break;

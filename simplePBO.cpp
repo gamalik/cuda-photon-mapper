@@ -24,8 +24,8 @@ extern "C" void launch_kernel(uchar4* , unsigned int, unsigned int, float,
 extern "C" void launch_render_kernel(uchar4* , unsigned int, unsigned int, float, float3 []);
 */
 
-extern "C" void launch_photon_mapping_kernel(uchar4* , unsigned int, unsigned int, float);
-extern "C" void launch_emit_photons_kernel(uchar4* , unsigned int, unsigned int, float);
+extern "C" void launch_photon_mapping_kernel(uchar4* , unsigned int, unsigned int, float, bool, bool);
+extern "C" void launch_emit_photons_kernel(uchar4* , unsigned int, unsigned int, float, bool, bool);
 extern "C" void launch_init_random_numbers_kernel();
 
 // variables
@@ -127,7 +127,7 @@ void initRandomNumbers() {
 }
 
 
-void photonMappingCuda()
+void photonMappingCuda(bool interpolateFlag, bool participatingMediaFlag)
 {
   uchar4 *dptr=NULL;
 
@@ -138,7 +138,7 @@ void photonMappingCuda()
 
   // execute the kernel
   // launch_emit_photons_kernel(dptr, image_width, image_height, animTime);
-  launch_photon_mapping_kernel(dptr, image_width, image_height, animTime);
+  launch_photon_mapping_kernel(dptr, image_width, image_height, animTime, interpolateFlag, participatingMediaFlag);
 
   // unmap buffer object
   cudaGLUnmapBufferObject(pbo);
@@ -163,7 +163,7 @@ void renderCuda(float3 pixelData[])
 
 
 // Run the Cuda part of the computation
-void simpleRunCuda()
+void simpleRunCuda(bool interpolateFlag, bool participatingMediaFlag)
 {
   uchar4 *dptr=NULL;
 
@@ -174,7 +174,7 @@ void simpleRunCuda()
 
   // execute the kernel
   // launch_kernel(dptr, image_width, image_height, animTime, numPhotons, photons);
-  launch_emit_photons_kernel(dptr, image_width, image_height, animTime);
+  launch_emit_photons_kernel(dptr, image_width, image_height, animTime, interpolateFlag, participatingMediaFlag);
 
 
   // unmap buffer object
@@ -200,5 +200,5 @@ void initCuda(int argc, char** argv)
   // Clean up on program exit
   atexit(cleanupCuda);
 
-  simpleRunCuda();
+  simpleRunCuda(false, false);
 }

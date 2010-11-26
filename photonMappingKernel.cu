@@ -4,17 +4,19 @@
 #include <cutil_math.h>
 #include <cutil_inline.h>
 
+// #define PARTICIPATING_MEDIA true
+
 #define MAX_SEARCH_RADIUS 3
 #define MAX_SPLAT_RADIUS 3
-#define ENERGY_WEIGHT 0.00015
+#define ENERGY_WEIGHT 0.0005
 #define SPLAT_ENERGY_WEIGHT 0.05
 #define CAUSTICS_PHOTONS 100
 
-#define NR_PHOTONS_X 64
-#define NR_PHOTONS_Y 64
-#define NR_PHOTONS_Z 64
+#define NR_PHOTONS_X 32
+#define NR_PHOTONS_Y 32
+#define NR_PHOTONS_Z 32
 
-#define INTERPOLATE true
+// #define INTERPOLATE true
 
 #define WORLD_DIM_X 3.0
 #define WORLD_DIM_Y 3.0
@@ -24,12 +26,25 @@
 #define MAX_VOL_PHOTONS_PER_THREAD 1000
 #define PARTICLE_RADIUS 0.01
 
-#define nrPhotons 100000
-#define RANDOM_NUMS 100000
+#define nrPhotons 10000
+#define RANDOM_NUMS 10000
 
 #define X_AXIS 0
 #define Y_AXIS 1
 #define Z_AXIS 2
+
+#define MAX_DIST 999999.9
+#define EXTINCTION_COEFICIENT 10.0
+#define PHOTON_SCATTERING_STEP_SIZE 1.0
+#define MEDIUM_SCATTERING_ITERATIONS 3
+#define VOLUME_PHOTON_WEIGHT 0.00005
+#define ORIGINAL_COLOR_WEIGHT 0.15
+
+#define MARCHING_ITERATIONS 10
+#define RAY_MARCH_STEP_SIZE 0.6
+
+#define VOLUME_INTEGRATION_RADIUS 3
+
 
 void checkCUDAError(const char *msg) {
   cudaError_t err = cudaGetLastError();
@@ -67,7 +82,7 @@ void checkCUDAError(const char *msg) {
 	// ----- Photon Mapping -----
 	__device__ int nrBounces = 5;                //Number of Times Each Photon Bounces
 	__device__ bool lightPhotons = true;      //Enable Photon Lighting?
-	__device__ bool interpolate = INTERPOLATE;
+// 	__device__ bool interpolate = INTERPOLATE;
 	__device__ float sqRadius = 1.0;             //Photon Integration Area (Squared for Efficiency)
 	__device__ float causticsSqRadius = 0.025;
 	__device__ float volumeSqRadius = 0.05;
@@ -206,10 +221,12 @@ __device__ float lightObject(int type, int idx, float3 P, float lightAmbient){
 
 
 __device__ void raytrace(float3 ray, float3 origin,
-						 float & gDist, int & gType, int & gIndex, bool & gIntersect, bool ignoreSmoke)
+						 float & gDist, int & gType, int & gIndex, bool & gIntersect, bool ignoreMedium)
 {
 	gIntersect = false; //No Intersections Along This Ray Yet
-	gDist = 999999.9;   //Maximum Distance to Any Object
+
+	if(ignoreMedium)
+		gDist = 999999.9;   //Maximum Distance to Any Object
 
 	for (int t = 0; t < nrTypes; t++) {
 		for (int i = 0; i < nrObjects[t]; i++) {
@@ -469,7 +486,7 @@ __device__ float3 interpolateEnergy(float3 p, float3 energy, int type, int id, f
 			float3 p3 = make_float3(0.0,0.0,0.0);
 			float3 p4 = make_float3(0.0,0.0,0.0);
 
-			if(p.x > p1.z) {
+			if(p.z > p1.z) {
 				p2.z = p1.z + getVoxelDim(Z_AXIS);
 				p3.z = p1.z + getVoxelDim(Z_AXIS);
 				p4.z = p1.z;
@@ -566,12 +583,12 @@ __device__ float3 interpolateEnergy(float3 p, float3 energy, int type, int id, f
 }
 
 
-__device__ float3 gatherPhotons(float3 p, int type, int id, float & gSqDist){
+__device__ float3 gatherPhotons(float3 p, int type, int id, float & gSqDist, bool interpolateFlag){
 	
 	float3 energy = make_float3(0.0,0.0,0.0);  
 	float3 N = surfaceNormal(type, id, p, gOrigin);                   //Surface Normal at Current Point
 	
-	if(interpolate) {
+	if(interpolateFlag) {
 		float3 c = interpolateEnergy(p, energy, type, id, gSqDist);
 		return c;
 	} else {
@@ -811,16 +828,148 @@ __device__ void handleReflection(float3 & ray, float3 & gOrigin, int & gType, in
 
 
 
+__device__ float3 integrateVolumePhotons(float3 point) {
+	float3 rgb = make_float3(0.0,0.0,0.0);
+
+	int3 worldPoint = getVoxelCoordinates(point);
+
+	int minX = 1;
+	if(worldPoint.x - VOLUME_INTEGRATION_RADIUS >= 1) 
+		minX = worldPoint.x - VOLUME_INTEGRATION_RADIUS;
+
+	int minY = 1;
+	if(worldPoint.y - VOLUME_INTEGRATION_RADIUS >= 1) 
+		minY = worldPoint.y - VOLUME_INTEGRATION_RADIUS;
+
+	int minZ = 1;
+	if(worldPoint.z - VOLUME_INTEGRATION_RADIUS >= 1) 
+		minZ = worldPoint.z - VOLUME_INTEGRATION_RADIUS;
+
+	int maxX = NR_PHOTONS_X-1;
+	if(worldPoint.x + VOLUME_INTEGRATION_RADIUS <= NR_PHOTONS_X-1)
+		maxX = worldPoint.x + VOLUME_INTEGRATION_RADIUS;
+
+	int maxY = NR_PHOTONS_Y-1;
+	if(worldPoint.y + VOLUME_INTEGRATION_RADIUS <= NR_PHOTONS_Y-1)
+		maxY = worldPoint.y + VOLUME_INTEGRATION_RADIUS;
+	
+	int maxZ = NR_PHOTONS_Z-1;
+	if(worldPoint.z + VOLUME_INTEGRATION_RADIUS <= NR_PHOTONS_Z-1)
+		maxZ = worldPoint.z + VOLUME_INTEGRATION_RADIUS;
+
+	
+	for(int i = minX; i < maxX; i++) {
+		for(int j = minY; j < maxY; j++) {
+			for(int k = minZ; k < maxZ; k++) {
+				rgb += photons[i][j][k];
+			}
+		}
+	}
+
+	return rgb;
+}
+
+
+
+__device__ float3 interpolateVolumePhotons(float3 p) {
+
+
+		float3 p1 = centerPoint(p);
+		float3 p2 = make_float3(0.0,0.0,0.0);
+		float3 p3 = make_float3(0.0,0.0,0.0);
+		float3 p4 = make_float3(0.0,0.0,0.0);
+
+		if(p.x > p1.x) {
+			p2.x = p1.x + getVoxelDim(X_AXIS);
+			p3.x = p1.x + getVoxelDim(X_AXIS);
+			p4.x = p1.x;
+		} else {
+			p2.x = p1.x - getVoxelDim(X_AXIS);
+			p3.x = p1.x - getVoxelDim(X_AXIS);
+			p4.x = p1.x;
+		}
+
+		if(p.y > p1.y) {
+			p2.y = p1.y;
+			p3.y = p1.y + getVoxelDim(Y_AXIS);
+			p4.y = p1.y + getVoxelDim(Y_AXIS);
+		} else {
+			p2.y = p1.y;
+			p3.y = p1.y - getVoxelDim(Y_AXIS);
+			p4.y = p1.y - getVoxelDim(Y_AXIS);
+		}
+
+
+		float3 c1 = integrateVolumePhotons(p1);
+		float3 c2 = integrateVolumePhotons(p2);
+		float3 c3 = integrateVolumePhotons(p3);
+		float3 c4 = integrateVolumePhotons(p4);
+
+		float3 c;
+
+		float alfa = getAlpha(p, p1, p2, X_AXIS);
+		float3 p12 = interpolate3f(p1, p2, alfa);
+		float3 c12 = interpolate3f(c1, c2, alfa);
+
+		alfa = getAlpha(p, p3, p4, X_AXIS);
+		float3 p34 = interpolate3f(p3, p4, alfa);
+		float3 c34 = interpolate3f(c3, c4, alfa);
+
+		alfa = getAlpha(p, p12, p34, Y_AXIS);
+		c = interpolate3f(c12, c34, alfa);
+
+		return c;
+
+}
+
 
 __device__ float3 computePixelColor(float x, float y,
 									float & gDist, int & gType, int & gIndex, bool & gIntersect,
 									float3 & gPoint,
-									float & gSqDist){
+									float & gSqDist,
+									bool interpolateFlag,
+									bool participatingMediaFlag){
   float3 rgb = make_float3(0.0,0.0,0.0);
   float3 ray = make_float3(  x/szImg - 0.5 ,       //Convert Pixels to Image Plane Coordinates
                  -(y/szImg - 0.5), 1.0); //Focal Length = 1.0
-  raytrace(ray, gOrigin,gDist,gType,gIndex,gIntersect,false);                //Raytrace!!! - Intersected Objects are Stored in Global State
+  
+  
+  if(participatingMediaFlag) {
+	
+		float3 prevPoint = gOrigin;
 
+		gDist = RAY_MARCH_STEP_SIZE;
+		// raytrace(ray, prevPoint, gDist,gType,gIndex,gIntersect,false);                          //Trace the Photon's Path through medium
+
+		int i = 0;	
+		while(!gIntersect && i < MARCHING_ITERATIONS) {
+
+			// compute new starting point
+			prevPoint = ( (ray * gDist) + prevPoint);
+
+			// integrate
+			
+			rgb += integrateVolumePhotons(prevPoint);
+			
+
+
+			// trace photon through medium
+			// gDist = RAY_MARCH_STEP_SIZE;
+			// raytrace(ray, prevPoint, gDist,gType,gIndex,gIntersect,false);
+		
+			i++;
+		}
+
+		
+		
+		raytrace(ray, gOrigin, gDist,gType,gIndex,gIntersect,true);
+
+
+  } else {
+	raytrace(ray, gOrigin,gDist,gType,gIndex,gIntersect,true);                //Raytrace!!! - Intersected Objects are Stored in Global State
+  }
+  
+  
   
   if (gIntersect){                       //Intersection                    
     gPoint = (ray * gDist);           //3D Point of Intersection
@@ -837,7 +986,18 @@ __device__ float3 computePixelColor(float x, float y,
 		if(gIntersect) {
 			if (lightPhotons){                   //Lighting via Photon Mapping
 			  // rgb += make_float3(0.5,0.5,0.5);
-			  rgb += gatherPhotons(gPoint,gType,gIndex, gSqDist);
+			  
+				if(participatingMediaFlag) {
+					//if(rgb.x == 0.0 && rgb.y == 0.0 && rgb.z == 0.0)
+					
+					float3 color = gatherPhotons(gPoint,gType,gIndex, gSqDist, interpolateFlag);
+					rgb += ORIGINAL_COLOR_WEIGHT*color;
+
+
+				} else {
+					rgb += gatherPhotons(gPoint,gType,gIndex, gSqDist, interpolateFlag);
+				}
+			  
 			} else {                                //Lighting via Standard Illumination Model (Diffuse + Ambient)
 			  int tType = gType, tIndex = gIndex;//Remember Intersected Object
 			  float i = gAmbient;                //If in Shadow, Use Ambient Color of Original Object
@@ -870,6 +1030,9 @@ __device__ uint get_random()
 {
     m_z = 36969 * (m_z & 65535) + (m_z >> 16);
     m_w = 18000 * (m_w & 65535) + (m_w >> 16);
+
+	__threadfence();
+
     return (m_z << 16) + m_w;  /* 32-bit result */
 }
 
@@ -980,6 +1143,24 @@ __device__ void splatEnergy(int3 voxelPoint, float3 energy, int type, int id) {
 	
 }
 
+
+__device__ void storeVolumePhoton(float3 location, float3 energy) {
+	int3 voxelPoint = getVoxelCoordinates(location);
+
+	voxelPoint.x = voxelPoint.x < NR_PHOTONS_X ? voxelPoint.x : NR_PHOTONS_X - 1;
+	voxelPoint.x = voxelPoint.x < 0 ? 0 : voxelPoint.x;
+	voxelPoint.y = voxelPoint.y < NR_PHOTONS_Y ? voxelPoint.y : NR_PHOTONS_Y - 1;
+	voxelPoint.y = voxelPoint.y < 0 ? 0 : voxelPoint.y;
+	voxelPoint.z = voxelPoint.z < NR_PHOTONS_Z ? voxelPoint.z : NR_PHOTONS_Z - 1;
+	voxelPoint.z = voxelPoint.z < 0 ? 0 : voxelPoint.z;
+
+	//photons[voxelPoint.x][voxelPoint.y][voxelPoint.z][0] = direction; //Direction
+	photons[voxelPoint.x][voxelPoint.y][voxelPoint.z] += energy; // (energy + photonWeight*(photons[voxelPoint.x][voxelPoint.y][voxelPoint.z][1])); //Add Photon's Energy to Total
+
+	__threadfence();  // make sure every thread sees the change
+}
+
+
 __device__ void storePhoton(int type, int id, float3 location, float3 direction, float3 energy, int index){
   
   int3 voxelPoint = getVoxelCoordinates(location);
@@ -992,7 +1173,8 @@ __device__ void storePhoton(int type, int id, float3 location, float3 direction,
   voxelPoint.z = voxelPoint.z < 0 ? 0 : voxelPoint.z;
 
   //photons[voxelPoint.x][voxelPoint.y][voxelPoint.z][0] = direction; //Direction
-  photons[voxelPoint.x][voxelPoint.y][voxelPoint.z] += energy; // (energy + photonWeight*(photons[voxelPoint.x][voxelPoint.y][voxelPoint.z][1])); //Add Photon's Energy to Total
+  if(type != 0)
+	photons[voxelPoint.x][voxelPoint.y][voxelPoint.z] += energy; // (energy + photonWeight*(photons[voxelPoint.x][voxelPoint.y][voxelPoint.z][1])); //Add Photon's Energy to Total
 
   splatEnergy(voxelPoint, energy, type, id);
 
@@ -1016,8 +1198,23 @@ __device__ void shadowPhoton(float3 ray,
 
 
 
+__device__ float3 randomize(float3 random) {
+
+	float3 moreRandom = random;
+
+	moreRandom.x = randFloat(random.x);
+	moreRandom.y = randFloat(random.y);
+	moreRandom.z = randFloat(random.z);
+
+	return moreRandom;
+
+}
+
+
+
 __device__ void emitPhotons(int index, float & gSqDist, float3 & gPoint,
-							float & gDist, int & gType, int & gIndex, bool & gIntersect){
+							float & gDist, int & gType, int & gIndex, bool & gIntersect,
+							bool interpolateFlag, bool participatingMediaFlag){
    
   
 	
@@ -1032,23 +1229,58 @@ __device__ void emitPhotons(int index, float & gSqDist, float3 & gPoint,
 	if(index < nrPhotons) {
 		// for (int i = 0; i < 1000; i++){ //Draw 3x Photons For Usability
 		int bounces = 1;
-		float3 rgb = make_float3(1.0,1.0,1.0);               //Initial Photon Color is White
+		float3 rgb = make_float3(10.0,10.0,10.0);               //Initial Photon Color is White
 		// float3 ray = normalize( rand3(1.0) );    //Randomize Direction of Photon Emission
 		float3 ray = normalize( randomNumbers[index] );    //Randomize Direction of Photon Emission
 		
+		float3 originalRay = ray;
+		float3 prevPoint = Light;                 //Emit From Point Light Source
+
+		if(participatingMediaFlag) {
+
+			float dist = 1.0 / EXTINCTION_COEFICIENT;
+			gDist = 1.0 / EXTINCTION_COEFICIENT;
+			// raytrace(ray, Light, gDist,gType,gIndex,gIntersect,false);                          //Trace the Photon's Path through medium
+		
+			int i = 0;	
+			while(i < MEDIUM_SCATTERING_ITERATIONS) {
+
+				// reduce photon intensity in medium
+				rgb = rgb - PHOTON_SCATTERING_STEP_SIZE;
+
+				// compute new starting point
+				gPoint = ( (ray * PHOTON_SCATTERING_STEP_SIZE) + prevPoint);
+
+				// store volume photon
+				storeVolumePhoton(gPoint, VOLUME_PHOTON_WEIGHT*rgb);
+
+				// bounce in random direction
+				ray = normalize( randomize(randomNumbers[i]) );
+
+				// trace photon through medium
+				// raytrace(ray, gPoint, gDist,gType,gIndex,gIntersect,false);
+			
+				dist += PHOTON_SCATTERING_STEP_SIZE;
+				prevPoint = gPoint;
+				i++;
+			}
+		
+			ray = originalRay;
+			prevPoint = Light;
+			
+			
+		} 
+
 		if(index < CAUSTICS_PHOTONS) {
 			// aim first 2000 photons in the direction of crystal sphere
 			ray = normalize( make_float3(spheres[0].x, spheres[0].y, spheres[0].z) - Light );
 			ray += 0.01*normalize( randomNumbers[index] );
 		}
-		
-		float3 prevPoint = Light;                 //Emit From Point Light Source
 
+		raytrace(ray, prevPoint, gDist,gType,gIndex,gIntersect,true);
 		
 
-		raytrace(ray, Light, gDist,gType,gIndex,gIntersect,true);                          //Trace the Photon's Path
-		//raytrace(ray, prevPoint, gDist,gType,gIndex,gIntersect,false);
-		
+
 		bool caustics = false;
 		bool computeNewPoint = true;
 
@@ -1074,16 +1306,61 @@ __device__ void emitPhotons(int index, float & gSqDist, float3 & gPoint,
 
 				
 				if (gType == 0 && gIndex == 1){      //Mirror Surface on This Specific Object
-					handleReflection(ray, prevPoint, gType, gIndex, gPoint, gIntersect, gDist, false);
+					handleReflection(ray, prevPoint, gType, gIndex, gPoint, gIntersect, gDist, true);
 					caustics = false;
 					computeNewPoint = false;
 				} else if(gType == 0 && gIndex == 0) {
-					handleRefraction(ray, prevPoint, gType, gIndex, gPoint, gIntersect, gDist, false);
+
+					/*
+					if(participatingMediaFlag && index < CAUSTICS_PHOTONS) {
+
+						float3 point = gPoint;
+						int type = gType;
+						int index = gIndex;
+						float dist = gDist;
+						bool intersect = gIntersect;
+
+						float3 rray = refract3(ray,point, type,index, point, 1.0);        //Refract Ray Off the Surface
+						point = ( (rray * 0.00001) + point);
+						raytrace(rray, point, dist,type,index,intersect,true);             //Follow the Refracted Ray
+						point = ( (rray * dist) + point);
+
+						rray = refract3(rray,point, type, index, point, -1.0);        //Refract Ray Off from inside the Surface
+						point = ( (rray * 0.00001) + point);
+						
+						//raytrace(rray, point, dist, type, index, intersect, true);             //Follow the Reflected Ray
+						//point = ( (rray * dist) + point);
+
+						float3 lastPoint = point;
+
+						float3 volumeRgb = causticsFactor*make_float3(1.0,0.0,0.0);
+						// raytrace(ray, Light, gDist,gType,gIndex,gIntersect,false);                          //Trace the Photon's Path through medium
+					
+						int i = 0;	
+						while(i < 10) {
+
+							// reduce photon intensity in medium
+							volumeRgb = volumeRgb - 0.1;
+
+							// compute new starting point
+							point = ( (rray * 0.001) + lastPoint);
+
+							// store volume photon
+							storeVolumePhoton(point, volumeRgb);
+
+							lastPoint = point;
+							i++;
+						}	
+					}*/
+
+					handleRefraction(ray, prevPoint, gType, gIndex, gPoint, gIntersect, gDist, true);
 					caustics = true;
 					computeNewPoint = false;
+
+
 				} else {
 					ray = reflect3(ray,prevPoint, gType,gIndex, gPoint, 1.0);                  //Bounce the Photon
-					raytrace(ray, gPoint, gDist,gType,gIndex,gIntersect,false);                         //Trace It to Next Location
+					raytrace(ray, gPoint, gDist,gType,gIndex,gIntersect,true);                         //Trace It to Next Location
 					caustics = false;
 					computeNewPoint = true;
 				}
@@ -1103,7 +1380,7 @@ __device__ void emitPhotons(int index, float & gSqDist, float3 & gPoint,
 __device__ void positionObjects(float animTime) {
 	
 	spheres[0].x = 1.0*cos(animTime);
-	// spheres[0].y = -1.0*cos(animTime);
+	spheres[0].y = 0.5*sin(2.0*animTime);
 	spheres[0].z = sin(animTime)+3.5;
 	/*
 	spheres[0].y = -1.0;
@@ -1111,7 +1388,7 @@ __device__ void positionObjects(float animTime) {
 	spheres[0].w = 0.5;
 	*/
 	spheres[1].x = 0.0;
-	spheres[1].y = -1.0; //*sin(0.5*animTime+5.0);
+	spheres[1].y = sin(0.5*animTime+5.0)-0.25;
 	spheres[1].z = 3.5;
 
 	/*
@@ -1129,7 +1406,8 @@ __device__ void positionObjects(float animTime) {
 
 
 
-__global__ void photon_mapping_kernel(uchar4* pos, unsigned int width, unsigned int height, float animTime) {
+__global__ void photon_mapping_kernel(uchar4* pos, unsigned int width, unsigned int height, float animTime,
+									  bool interpolateFlag, bool participatingMediaFlag) {
 
   // ----- Kernel indices -----
   int index = blockIdx.x * blockDim.x + threadIdx.x;
@@ -1165,7 +1443,7 @@ __global__ void photon_mapping_kernel(uchar4* pos, unsigned int width, unsigned 
   if(index < width*height) {
 	
 	float3 pixelColor = computePixelColor(x,y, gDist, gType, gIndex, gIntersect,
-									gPoint, gSqDist);
+									gPoint, gSqDist, interpolateFlag, participatingMediaFlag);
 
 	
     //float3 pixelColor = make_float3(0.0,255.0,255.0);
@@ -1183,7 +1461,7 @@ __global__ void photon_mapping_kernel(uchar4* pos, unsigned int width, unsigned 
 
 }
 
-__global__ void emit_photons_kernel(float animTime){
+__global__ void emit_photons_kernel(float animTime, bool interpolateFlag, bool participatingMediaFlag){
 	gAnimTime = animTime;
 
 	int index = blockIdx.x * blockDim.x + threadIdx.x;
@@ -1197,7 +1475,7 @@ __global__ void emit_photons_kernel(float animTime){
 
 	positionObjects(animTime);	
 
-	emitPhotons(index, gSqDist, gPoint, gDist, gType, gIndex,gIntersect);
+	emitPhotons(index, gSqDist, gPoint, gDist, gType, gIndex,gIntersect, interpolateFlag, participatingMediaFlag);
 	
 }
 
@@ -1243,7 +1521,7 @@ __global__ void init_photons_kernel(float animTime) {
 }
 
 extern "C" void launch_emit_photons_kernel(uchar4* pos, unsigned int image_width, 
-							  unsigned int image_height, float animTime) {
+							  unsigned int image_height, float animTime, bool interpolateFlag, bool participatingMediaFlag) {
 
 	
 	int threadsPerBlock = NR_PHOTONS_Z;
@@ -1260,7 +1538,7 @@ extern "C" void launch_emit_photons_kernel(uchar4* pos, unsigned int image_width
 	int nBlocks = totalThreads/nThreads; 
 	nBlocks += ((totalThreads%nThreads)>0)?1:0;
  
-	emit_photons_kernel<<< nBlocks, nThreads>>>(animTime);
+	emit_photons_kernel<<< nBlocks, nThreads>>>(animTime, interpolateFlag, participatingMediaFlag);
 
 	cudaThreadSynchronize();
 
@@ -1269,7 +1547,8 @@ extern "C" void launch_emit_photons_kernel(uchar4* pos, unsigned int image_width
 
 
 extern "C" void launch_photon_mapping_kernel(uchar4* pos, unsigned int image_width, 
-							  unsigned int image_height, float animTime) {
+							  unsigned int image_height, float animTime,
+							  bool interpolateFlag, bool participatingMediaFlag) {
 
 
     int nThreads=256;
@@ -1279,7 +1558,7 @@ extern "C" void launch_photon_mapping_kernel(uchar4* pos, unsigned int image_wid
 
 	// emit_photons_kernel<<< 1, 1>>>(animTime);
 
-	photon_mapping_kernel<<< nBlocks, nThreads>>>(pos, image_width, image_height, animTime);
+	photon_mapping_kernel<<< nBlocks, nThreads>>>(pos, image_width, image_height, animTime, interpolateFlag, participatingMediaFlag);
 
 	cudaThreadSynchronize();
 
